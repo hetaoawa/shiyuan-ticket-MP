@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.AssignRolesRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.CreateUserRequest;
+import top.hetao.shiyuanticketmp.auth.controller.dto.ResetPasswordRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateUserRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
@@ -70,6 +71,10 @@ public class UserController {
     @SaCheckPermission("user:delete")
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable Long id) {
+        SysUser user = userService.getById(id);
+        if (user == null) {
+            throw new top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException("用户不存在: " + id);
+        }
         userService.removeById(id);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
@@ -79,8 +84,8 @@ public class UserController {
 
     @SaCheckPermission("user:update")
     @PostMapping("/{id}/reset-password")
-    public Map<String, Object> resetPassword(@PathVariable Long id, @RequestParam String newPassword) {
-        userService.resetPassword(id, newPassword);
+    public Map<String, Object> resetPassword(@PathVariable Long id, @RequestBody ResetPasswordRequest request) {
+        userService.resetPassword(id, request.getNewPassword());
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "密码重置成功");

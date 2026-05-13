@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.workorder.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -12,6 +13,7 @@ public class AddCommentRequest {
     private String content;
 
     /** 评论类型：COMMENT=评论 NOTE=备注，默认 COMMENT */
+    @JsonProperty("comment_type")
     private String commentType;
 
     /** 附件ID列表JSON，如 [1,2,3]（可选） */

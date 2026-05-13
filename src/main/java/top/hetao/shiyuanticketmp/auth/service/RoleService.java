@@ -30,6 +30,9 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public SysRole createRole(CreateRoleRequest request) {
+        if (request.getRoleCode() == null || request.getRoleCode().isBlank()) {
+            throw new WorkOrderException("角色编码不能为空");
+        }
         long count = count(new LambdaQueryWrapper<SysRole>()
                 .eq(SysRole::getRoleCode, request.getRoleCode()));
         if (count > 0) {

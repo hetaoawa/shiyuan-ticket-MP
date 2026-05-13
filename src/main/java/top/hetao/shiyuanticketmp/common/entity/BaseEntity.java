@@ -13,7 +13,6 @@ import java.time.LocalDateTime;
  * <ul>
  *   <li>{@code id} — 雪花算法主键，应用层生成，不依赖数据库自增</li>
  *   <li>{@code tenantId} — 租户 ID，由 MyBatis-Plus TenantLineInnerInterceptor 自动注入</li>
- *   <li>{@code version} — 乐观锁版本号，由 MyBatis-Plus OptimisticLockerInnerInterceptor 自动管理</li>
  *   <li>{@code createdAt} / {@code updatedAt} — 自动填充的时间戳</li>
  *   <li>{@code deleted} — 逻辑删除标记</li>
  * </ul>
@@ -28,11 +27,6 @@ public abstract class BaseEntity implements Serializable {
     /** 租户 ID（多租户物理隔离，由拦截器自动拼接到 SQL） */
     @TableField("tenant_id")
     private Long tenantId;
-
-    /** 乐观锁版本号（更新时自动 +1，防止并发覆写） */
-    @Version
-    @TableField("version")
-    private Integer version;
 
     /** 创建时间（插入时自动填充） */
     @TableField(fill = FieldFill.INSERT)

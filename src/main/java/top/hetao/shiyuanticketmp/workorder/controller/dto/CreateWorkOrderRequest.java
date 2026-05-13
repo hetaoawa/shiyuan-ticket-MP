@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.workorder.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
@@ -15,9 +16,11 @@ public class CreateWorkOrderRequest {
     private String description;
 
     /** 物流单号 */
+    @JsonProperty("tracking_no")
     private String trackingNo;
 
     /** 目标地址 */
+    @JsonProperty("target_address")
     private String targetAddress;
 
     /** 工单类型（可选，不传则自动解析） */

@@ -3,7 +3,6 @@ package top.hetao.shiyuanticketmp.common.config;
 import com.baomidou.mybatisplus.annotation.DbType;
 import com.baomidou.mybatisplus.core.handlers.MetaObjectHandler;
 import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
-import com.baomidou.mybatisplus.extension.plugins.inner.OptimisticLockerInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.inner.TenantLineInnerInterceptor;
 import com.baomidou.mybatisplus.extension.plugins.handler.TenantLineHandler;
@@ -24,7 +23,6 @@ import java.util.List;
  * <p>注册以下拦截器（按顺序）：
  * <ol>
  *   <li><b>多租户拦截器</b>（TenantLineInnerInterceptor）— 自动在 SELECT/UPDATE/DELETE SQL 中拼接 tenant_id 条件</li>
- *   <li><b>乐观锁拦截器</b>（OptimisticLockerInnerInterceptor）— UPDATE 时自动携带 version 条件并 +1</li>
  *   <li><b>分页拦截器</b>（PaginationInnerInterceptor）— 物理分页</li>
  * </ol>
  *
@@ -72,10 +70,7 @@ public class MybatisPlusConfig {
             }
         }));
 
-        // ② 乐观锁拦截器
-        interceptor.addInnerInterceptor(new OptimisticLockerInnerInterceptor());
-
-        // ③ 分页拦截器
+        // ② 分页拦截器
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
 
         return interceptor;
