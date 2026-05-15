@@ -18,6 +18,7 @@ package top.hetao.shiyuanticketmp.common.context;
 public final class TenantContext {
 
     private static final ThreadLocal<Long> TENANT_ID = new ThreadLocal<>();
+    private static final ThreadLocal<Boolean> IS_ADMIN = new ThreadLocal<>();
 
     private TenantContext() {}
 
@@ -40,10 +41,30 @@ public final class TenantContext {
     }
 
     /**
+     * 获取当前线程是否为超管。
+     *
+     * @return 是否为超管，未设置时返回 false
+     */
+    public static boolean isAdmin() {
+        Boolean admin = IS_ADMIN.get();
+        return admin != null && admin;
+    }
+
+    /**
+     * 设置当前线程是否为超管。
+     *
+     * @param admin 是否为超管
+     */
+    public static void setAdmin(boolean admin) {
+        IS_ADMIN.set(admin);
+    }
+
+    /**
      * 清除当前线程的租户上下文。
      * 在请求结束或登出时必须调用，防止 ThreadLocal 泄漏。
      */
     public static void clear() {
         TENANT_ID.remove();
+        IS_ADMIN.remove();
     }
 }

@@ -38,7 +38,9 @@ public class MybatisPlusConfig {
             "sys_dict",
             "sys_permission",
             "sys_user_role",
-            "sys_role_permission"
+            "sys_role_permission",
+            "sys_audit_log",
+            "work_order_comment"
     );
 
     /**
@@ -55,6 +57,10 @@ public class MybatisPlusConfig {
         interceptor.addInnerInterceptor(new TenantLineInnerInterceptor(new TenantLineHandler() {
             @Override
             public Expression getTenantId() {
+                // 超管角色绕过租户过滤
+                if (TenantContext.isAdmin()) {
+                    return null; // 返回 null 表示不过滤
+                }
                 Long tenantId = TenantContext.getTenantId();
                 return new LongValue(tenantId != null ? tenantId : 0L);
             }
@@ -66,6 +72,10 @@ public class MybatisPlusConfig {
 
             @Override
             public boolean ignoreTable(String tableName) {
+                // 超管跳过所有表的租户过滤
+                if (TenantContext.isAdmin()) {
+                    return true;
+                }
                 return EXCLUDE_TABLES.contains(tableName);
             }
         }));

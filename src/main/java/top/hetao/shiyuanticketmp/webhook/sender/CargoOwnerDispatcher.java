@@ -195,9 +195,11 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     private String actionLabel(String status) {
         return switch (status) {
+            case "PENDING" -> "工单已创建";
             case "ASSIGNED" -> "工单已派发";
             case "CLOSED" -> "工单已关闭";
             case "REJECTED" -> "工单已驳回";
+            case "COMMENT" -> "工单有新留言";
             default -> status;
         };
     }

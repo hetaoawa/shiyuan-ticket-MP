@@ -11,7 +11,9 @@ import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.service.WorkOrderCommentService;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.AddCommentRequest;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.BatchAssignRequest;
+import top.hetao.shiyuanticketmp.workorder.controller.dto.CommentVO;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.CreateWorkOrderRequest;
+import top.hetao.shiyuanticketmp.workorder.controller.dto.ResubmitWorkOrderRequest;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
@@ -159,6 +161,51 @@ public class WorkOrderController {
         return result;
     }
 
+    /**
+     * 被驳回工单重新提交。
+     *
+     * <p>允许提交人编辑工单信息后重新提交，状态 REJECTED → PENDING。
+     * 需要 {@code workorder:resubmit} 权限。
+     */
+    @PostMapping("/{id}/resubmit")
+    @SaCheckPermission("workorder:resubmit")
+    public Map<String, Object> resubmit(@PathVariable Long id,
+                                        @RequestBody ResubmitWorkOrderRequest request) {
+        WorkOrder updateData = new WorkOrder();
+        updateData.setTitle(request.getTitle());
+        updateData.setDescription(request.getDescription());
+        updateData.setTrackingNo(request.getTrackingNo());
+        updateData.setTargetAddress(request.getTargetAddress());
+        updateData.setPriority(request.getPriority());
+
+        WorkOrder order = workOrderService.resubmit(id, updateData);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "重新提交成功");
+        result.put("data", order);
+        return result;
+    }
+
+    /**
+     * 系统管理员强制驳回工单。
+     *
+     * <p>绕过常规状态校验，任意非 CLOSED 状态均可驳回。
+     * 需要 {@code workorder:force-reject} 权限（仅 SYSTEM_ADMIN）。
+     */
+    @PostMapping("/{id}/force-reject")
+    @SaCheckPermission("workorder:force-reject")
+    public Map<String, Object> forceReject(@PathVariable Long id,
+                                           @RequestParam String reason) {
+        WorkOrder order = workOrderService.forceReject(id, reason);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "强制驳回成功");
+        result.put("data", order);
+        return result;
+    }
+
     // ----------------------------------------------------------------
     // 批量派发
     // ----------------------------------------------------------------
@@ -216,7 +263,7 @@ public class WorkOrderController {
     public Map<String, Object> listComments(@PathVariable Long id,
                                             @RequestParam(defaultValue = "1") int page,
                                             @RequestParam(defaultValue = "20") int pageSize) {
-        IPage<WorkOrderComment> pageResult = commentService.listByWorkOrder(id, page, pageSize);
+        IPage<CommentVO> pageResult = commentService.listByWorkOrderWithUser(id, page, pageSize);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);

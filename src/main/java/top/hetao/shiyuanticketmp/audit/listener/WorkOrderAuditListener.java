@@ -49,7 +49,8 @@ public class WorkOrderAuditListener {
         auditLog.setBizType("WORK_ORDER");
         auditLog.setBizId(order.getId());
         auditLog.setAction(event.getAction());
-        auditLog.setOperatorId(event.getOperatorId());
+        // operatorId 可能为 null（如系统自动操作），设置默认值 0
+        auditLog.setOperatorId(event.getOperatorId() != null ? event.getOperatorId() : 0L);
 
         try {
             auditLog.setDetail(objectMapper.writeValueAsString(detail));

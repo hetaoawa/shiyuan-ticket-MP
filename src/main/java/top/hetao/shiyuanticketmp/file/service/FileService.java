@@ -2,9 +2,12 @@ package top.hetao.shiyuanticketmp.file.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
@@ -24,16 +27,19 @@ import java.util.*;
  * <p>提供预签名 URL 生成和文件元数据管理功能。
  * 客户端通过预签名 URL 直接上传文件到 S3/OSS，服务器不经过文件流。
  */
+@Slf4j
 @Service
 public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
 
+    private final S3Client s3Client;
     private final S3Presigner s3Presigner;
     private final S3Config s3Config;
 
     @Value("${s3.presign-expire-seconds:3600}")
     private long presignExpireSeconds;
 
-    public FileService(S3Presigner s3Presigner, S3Config s3Config) {
+    public FileService(S3Client s3Client, S3Presigner s3Presigner, S3Config s3Config) {
+        this.s3Client = s3Client;
         this.s3Presigner = s3Presigner;
         this.s3Config = s3Config;
     }
@@ -60,6 +66,7 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
                 .putObjectRequest(putRequest));
 
         String uploadUrl = presigned.url().toString();
+        log.info("[S3] 生成上传预签名URL: fileName={}, contentType={}, fileSize={}, uploadUrl={}", originalName, contentType, fileSize, uploadUrl);
 
         SysFile sysFile = new SysFile();
         sysFile.setOriginalName(originalName);
@@ -118,6 +125,36 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         if (sysFile == null) {
             throw new WorkOrderException("文件不存在");
         }
+        log.info("[S3] 确认上传完成: fileId={}, storageKey={}", fileId, sysFile.getStorageKey());
+    }
+
+    /**
+     * 删除文件（逻辑删除数据库记录 + 物理删除 S3 对象）。
+     *
+     * @param fileId 文件ID
+     */
+    @Transactional
+    public void deleteFile(Long fileId) {
+        SysFile sysFile = getById(fileId);
+        if (sysFile == null) {
+            throw new WorkOrderException("文件不存在");
+        }
+
+        // 物理删除 S3 对象
+        try {
+            log.info("[S3] 删除文件: fileId={}, storageKey={}", fileId, sysFile.getStorageKey());
+            DeleteObjectRequest deleteRequest = DeleteObjectRequest.builder()
+                    .bucket(s3Config.getBucket())
+                    .key(sysFile.getStorageKey())
+                    .build();
+            s3Client.deleteObject(deleteRequest);
+        } catch (Exception e) {
+            // S3 删除失败不影响数据库删除
+            log.error("[S3] 删除S3对象失败: fileId={}, storageKey={}", fileId, sysFile.getStorageKey(), e);
+        }
+
+        // 逻辑删除数据库记录
+        removeById(fileId);
     }
 
     private String buildStorageKey(String originalName) {

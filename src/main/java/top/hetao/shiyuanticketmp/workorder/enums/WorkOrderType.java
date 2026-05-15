@@ -7,23 +7,17 @@ package top.hetao.shiyuanticketmp.workorder.enums;
  */
 public enum WorkOrderType {
 
-    /** 破损反馈 */
-    DAMAGE("破损反馈"),
+    /** 改地址 */
+    CHANGE_ADDRESS("改地址"),
 
-    /** 丢失反馈 */
-    LOSS("丢失反馈"),
+    /** 拦截 */
+    INTERCEPT("拦截"),
 
-    /** 延迟反馈 */
-    DELAY("延迟反馈"),
+    /** 破损 */
+    DAMAGE("破损"),
 
-    /** 库存异常 */
-    INVENTORY("库存异常"),
-
-    /** 发货请求 */
-    SHIPPING("发货请求"),
-
-    /** 退货处理 */
-    RETURN("退货处理"),
+    /** 丢失 */
+    LOST("丢失"),
 
     /** 其他 */
     OTHER("其他");

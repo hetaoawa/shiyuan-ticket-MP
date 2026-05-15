@@ -10,19 +10,19 @@ import org.springframework.http.converter.json.Jackson2ObjectMapperBuilder;
 /**
  * Jackson 全局配置。
  *
- * <p>将 Long/long 类型序列化为 String，防止 JavaScript 因 Number 精度限制
- * 导致雪花 ID（超过 2^53）丢失精度。
+ * <p>将 Long/long 类型序列化为 String，避免 JavaScript 前端
+ * 处理雪花 ID（19 位）时丢失精度（JS Number.MAX_SAFE_INTEGER = 2^53 - 1 ≈ 16 位）。
  */
 @Configuration
 public class JacksonConfig {
 
     @Bean
-    public ObjectMapper objectMapper(Jackson2ObjectMapperBuilder builder) {
-        ObjectMapper mapper = builder.createXmlMapper(false).build();
+    public ObjectMapper jacksonObjectMapper(Jackson2ObjectMapperBuilder builder) {
+        ObjectMapper objectMapper = builder.createXmlMapper(false).build();
         SimpleModule module = new SimpleModule();
         module.addSerializer(Long.class, ToStringSerializer.instance);
         module.addSerializer(Long.TYPE, ToStringSerializer.instance);
-        mapper.registerModule(module);
-        return mapper;
+        objectMapper.registerModule(module);
+        return objectMapper;
     }
 }

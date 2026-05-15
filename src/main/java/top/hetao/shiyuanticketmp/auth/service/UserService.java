@@ -18,6 +18,8 @@ import top.hetao.shiyuanticketmp.auth.mapper.SysUserRoleMapper;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.List;
+import java.util.stream.Collectors;
+import top.hetao.shiyuanticketmp.auth.controller.dto.SimpleUserDTO;
 
 @Service
 public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
@@ -39,6 +41,22 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     public SysUser getByUsername(String username) {
         return getOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, username));
+    }
+
+    /**
+     * 根据用户名查询用户（忽略租户过滤，用于登录）。
+     *
+     * @param username 用户名
+     * @return 用户实体，不存在时返回 null
+     */
+    @Transactional(readOnly = true)
+    public SysUser getByUsernameIgnoreTenant(String username) {
+        return baseMapper.selectByUsernameIgnoreTenant(username);
+    }
+
+    @Transactional(readOnly = true)
+    public SysUser getByIdIgnoreTenant(Long id) {
+        return baseMapper.selectByIdIgnoreTenant(id);
     }
 
     @Transactional(readOnly = true)
@@ -122,5 +140,22 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     @Transactional(readOnly = true)
     public List<Long> getUserRoleIds(Long userId) {
         return userRoleMapper.selectRoleIdsByUserId(userId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SimpleUserDTO> listSimpleUsers() {
+        List<SysUser> users = list(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getId, SysUser::getUsername, SysUser::getNickname)
+                .eq(SysUser::getStatus, 1)
+                .orderByAsc(SysUser::getUsername));
+        return users.stream()
+                .map(user -> {
+                    SimpleUserDTO dto = new SimpleUserDTO();
+                    dto.setId(user.getId());
+                    dto.setUsername(user.getUsername());
+                    dto.setNickname(user.getNickname());
+                    return dto;
+                })
+                .collect(Collectors.toList());
     }
 }

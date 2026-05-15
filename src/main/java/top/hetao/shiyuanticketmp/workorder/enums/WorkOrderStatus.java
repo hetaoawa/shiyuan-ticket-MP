@@ -12,6 +12,11 @@ package top.hetao.shiyuanticketmp.workorder.enums;
  *      │                    │
  *      ▼  close()           ▼  reject()
  *  CLOSED（已关闭）     REJECTED（已驳回）
+ *                          │
+ *                          ▼  resubmit()  ← 提交人编辑后重新提交
+ *                      PENDING（待处理）
+ *
+ *  管理员强制驳回：任意非 CLOSED → REJECTED（forceReject）
  * </pre>
  */
 public enum WorkOrderStatus {

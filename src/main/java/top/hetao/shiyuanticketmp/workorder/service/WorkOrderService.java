@@ -75,4 +75,29 @@ public interface WorkOrderService {
      * 按条件查询工单列表（不分页，用于导出）。
      */
     List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo);
+
+    /**
+     * 被驳回工单重新提交，状态 REJECTED → PENDING。
+     *
+     * <p>允许提交人编辑工单信息（标题、描述、物流单号、目标地址、优先级）后重新提交。
+     * 驳回原因和关闭时间会被清除。
+     *
+     * @param workOrderId 工单主键
+     * @param updateData  更新后的工单信息
+     * @return 更新后的工单
+     * @throws WorkOrderException 工单不存在或当前状态不是 REJECTED 时
+     */
+    WorkOrder resubmit(Long workOrderId, WorkOrder updateData);
+
+    /**
+     * 系统管理员强制驳回工单，任意非 CLOSED 状态均可驳回。
+     *
+     * <p>绕过常规状态校验，仅 CLOSED 状态不可驳回（已完结工单不可逆）。
+     *
+     * @param workOrderId 工单主键
+     * @param reason      驳回原因
+     * @return 驳回后的工单
+     * @throws WorkOrderException 工单不存在或当前状态为 CLOSED 时
+     */
+    WorkOrder forceReject(Long workOrderId, String reason);
 }

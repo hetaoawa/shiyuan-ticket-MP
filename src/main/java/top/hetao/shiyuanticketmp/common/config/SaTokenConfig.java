@@ -27,9 +27,20 @@ import java.util.List;
 @Configuration
 public class SaTokenConfig implements WebMvcConfigurer {
 
-    private static final String[] EXCLUDE_PATHS = {
+    /** Sa-Token 登录校验排除路径 */
+    private static final String[] AUTH_EXCLUDE_PATHS = {
             "/api/auth/**",
             "/api/webhook",
+            "/api/webhook/**",
+            "/error",
+            "/favicon.ico"
+    };
+
+    /** 租户上下文拦截器排除路径（仅排除登录，/api/auth/me 和 /api/auth/logout 需要租户上下文） */
+    private static final String[] TENANT_EXCLUDE_PATHS = {
+            "/api/auth/login",
+            "/api/webhook",
+            "/api/webhook/**",
             "/error",
             "/favicon.ico"
     };
@@ -41,12 +52,12 @@ public class SaTokenConfig implements WebMvcConfigurer {
                     // checkLogin 会校验当前请求是否已登录
                 }))
                 .addPathPatterns("/**")
-                .excludePathPatterns(EXCLUDE_PATHS);
+                .excludePathPatterns(AUTH_EXCLUDE_PATHS);
 
         // 租户上下文拦截器（在 Sa-Token 之后执行，确保已登录）
         registry.addInterceptor(new TenantInterceptor())
                 .addPathPatterns("/**")
-                .excludePathPatterns(EXCLUDE_PATHS)
+                .excludePathPatterns(TENANT_EXCLUDE_PATHS)
                 .order(1);
     }
 
@@ -66,6 +77,9 @@ public class SaTokenConfig implements WebMvcConfigurer {
                 if (tenantId != null) {
                     TenantContext.setTenantId(Long.parseLong(tenantId.toString()));
                 }
+                // 从 Session 读取登录时存入的超管标志，避免调用 getRoleList() 触发租户过滤的 SQL
+                Object isAdmin = StpUtil.getSession().get("isAdmin");
+                TenantContext.setAdmin(isAdmin instanceof Boolean && (Boolean) isAdmin);
             } catch (Exception ignored) {
                 // 未登录时获取 session 会抛异常，忽略即可
             }

@@ -61,4 +61,10 @@ public class WorkOrder extends BaseEntity {
 
     /** 关闭/驳回时间 */
     private LocalDateTime closedAt;
+
+    /** 货主侧群 ID（来自外部 WebHook 入站消息的 conversationId） */
+    private String conversationId;
+
+    /** 货主侧发送人 ID（来自外部 WebHook 入站消息的 senderStaffId） */
+    private String senderStaffId;
 }

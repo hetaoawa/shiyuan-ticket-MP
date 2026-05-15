@@ -15,12 +15,10 @@ import java.util.Map;
 public class WorkOrderTypeResolver {
 
     private static final Map<WorkOrderType, String[]> KEYWORDS = Map.of(
-            WorkOrderType.DAMAGE,   new String[]{"破损", "损坏", "破了", "碎了", "坏了"},
-            WorkOrderType.LOSS,     new String[]{"丢失", "丢了", "遗失", "找不到", "少了"},
-            WorkOrderType.DELAY,    new String[]{"延迟", "迟了", "晚了", "超时", "逾期"},
-            WorkOrderType.INVENTORY, new String[]{"库存", "盘点", "多货", "少货", "差异"},
-            WorkOrderType.SHIPPING, new String[]{"发货", "出库", "寄出", "配送", "快递"},
-            WorkOrderType.RETURN,   new String[]{"退货", "退回", "返仓", "退款", "换货"}
+            WorkOrderType.CHANGE_ADDRESS, new String[]{"改地址", "修改地址", "变更地址", "地址变更"},
+            WorkOrderType.INTERCEPT,      new String[]{"拦截", "拦截件", "中途拦截"},
+            WorkOrderType.DAMAGE,         new String[]{"破损", "损坏", "破了", "碎了", "坏了"},
+            WorkOrderType.LOST,           new String[]{"丢失", "丢了", "遗失", "找不到", "少了"}
     );
 
     /**

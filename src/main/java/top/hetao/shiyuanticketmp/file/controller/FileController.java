@@ -118,4 +118,17 @@ public class FileController {
         result.put("data", files);
         return result;
     }
+
+    /**
+     * 删除文件。
+     */
+    @DeleteMapping("/{id}")
+    public Map<String, Object> delete(@PathVariable Long id) {
+        fileService.deleteFile(id);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "删除成功");
+        return result;
+    }
 }

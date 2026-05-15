@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
+import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.workorder.cache.WorkOrderCacheManager;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
@@ -35,6 +36,11 @@ import java.util.Map;
  *      │                    │
  *      ▼  close()           ▼  reject()
  *  CLOSED（已关闭）     REJECTED（已驳回）
+ *                          │
+ *                          ▼  resubmit()  ← 提交人编辑后重新提交
+ *                      PENDING（待处理）
+ *
+ *  管理员强制驳回：任意非 CLOSED → REJECTED（forceReject）
  * </pre>
  *
  * <p><b>WebHook 投递时机策略（两种模式）：</b>
@@ -60,24 +66,29 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
     private static final Logger log = LoggerFactory.getLogger(WorkOrderServiceImpl.class);
 
-    private static final String ACTION_CREATE = "CREATE";
-    private static final String ACTION_ASSIGN = "ASSIGN";
-    private static final String ACTION_CLOSE  = "CLOSE";
-    private static final String ACTION_REJECT = "REJECT";
+    private static final String ACTION_CREATE    = "CREATE";
+    private static final String ACTION_ASSIGN    = "ASSIGN";
+    private static final String ACTION_CLOSE     = "CLOSE";
+    private static final String ACTION_REJECT    = "REJECT";
+    private static final String ACTION_RESUBMIT  = "RESUBMIT";
+    private static final String ACTION_FORCE_REJECT = "FORCE_REJECT";
 
     private final WorkOrderMapper mapper;
     private final ApplicationEventPublisher eventPublisher;
     private final WorkOrderCacheManager cacheManager;
     private final WorkOrderTypeResolver typeResolver;
+    private final SysRoleMapper roleMapper;
 
     public WorkOrderServiceImpl(WorkOrderMapper mapper,
                                 ApplicationEventPublisher eventPublisher,
                                 WorkOrderCacheManager cacheManager,
-                                WorkOrderTypeResolver typeResolver) {
+                                WorkOrderTypeResolver typeResolver,
+                                SysRoleMapper roleMapper) {
         this.mapper = mapper;
         this.eventPublisher = eventPublisher;
         this.cacheManager = cacheManager;
         this.typeResolver = typeResolver;
+        this.roleMapper = roleMapper;
     }
 
     @Override
@@ -138,6 +149,12 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Transactional
     public WorkOrder assign(Long workOrderId, Long assigneeId) {
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.PENDING);
+
+        // 校验：只能派发给云仓侧人员（WAREHOUSE_ADMIN 角色）
+        List<String> assigneeRoles = roleMapper.selectRoleCodesByUserId(assigneeId);
+        if (!assigneeRoles.contains("WAREHOUSE_ADMIN")) {
+            throw new WorkOrderException("只能派发给云仓管理人员");
+        }
 
         order.setAssigneeId(assigneeId);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
@@ -220,6 +237,101 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
                 this, order, WorkOrderStatus.IN_PROGRESS, ACTION_REJECT,
                 order.getAssigneeId(), Map.of("reason", reason)));
+
+        return order;
+    }
+
+    // ----------------------------------------------------------------
+    // 被驳回工单重新提交（REJECTED → PENDING）
+    // ----------------------------------------------------------------
+
+    /**
+     * 被驳回工单重新提交，状态 {@code REJECTED → PENDING}。
+     *
+     * <p>允许提交人编辑工单信息后重新提交。驳回原因和关闭时间会被清除。
+     * 状态变更后触发 WebHook 通知。
+     *
+     * @param workOrderId 工单主键
+     * @param updateData  更新后的工单信息（标题、描述、物流单号、目标地址、优先级）
+     * @throws WorkOrderException 工单不存在或当前状态不是 REJECTED 时
+     */
+    @Override
+    @Transactional
+    public WorkOrder resubmit(Long workOrderId, WorkOrder updateData) {
+        WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.REJECTED);
+
+        // 更新工单信息
+        if (updateData.getTitle() != null && !updateData.getTitle().isBlank()) {
+            order.setTitle(updateData.getTitle());
+        }
+        if (updateData.getDescription() != null) {
+            order.setDescription(updateData.getDescription());
+        }
+        if (updateData.getTrackingNo() != null) {
+            order.setTrackingNo(updateData.getTrackingNo());
+        }
+        if (updateData.getTargetAddress() != null) {
+            order.setTargetAddress(updateData.getTargetAddress());
+        }
+        if (updateData.getPriority() != null) {
+            order.setPriority(updateData.getPriority());
+        }
+
+        // 清除驳回信息，状态回到 PENDING
+        order.setStatus(WorkOrderStatus.PENDING);
+        order.setRejectionReason(null);
+        order.setClosedAt(null);
+        order.setAssigneeId(null);
+        order.setAssignedAt(null);
+
+        // 重新解析工单类型
+        order.setType(typeResolver.resolve(order.getTitle(), order.getDescription()));
+
+        mapper.updateById(order);
+        log.info("[工单] 重新提交成功 id={} title={}", workOrderId, order.getTitle());
+
+        eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
+                this, order, WorkOrderStatus.REJECTED, ACTION_RESUBMIT,
+                order.getSubmitterId(), Map.of()));
+
+        return order;
+    }
+
+    // ----------------------------------------------------------------
+    // 管理员强制驳回（任意非 CLOSED → REJECTED）
+    // ----------------------------------------------------------------
+
+    /**
+     * 系统管理员强制驳回工单，任意非 CLOSED 状态均可驳回。
+     *
+     * <p>绕过常规状态校验（常规驳回要求 IN_PROGRESS），仅 CLOSED 状态不可驳回。
+     * 状态变更后触发 WebHook 通知。
+     *
+     * @param workOrderId 工单主键
+     * @param reason      驳回原因
+     * @throws WorkOrderException 工单不存在或当前状态为 CLOSED 时
+     */
+    @Override
+    @Transactional
+    public WorkOrder forceReject(Long workOrderId, String reason) {
+        WorkOrder order = loadAndValidate(workOrderId, null);
+
+        // 仅 CLOSED 不可强制驳回
+        if (order.getStatus() == WorkOrderStatus.CLOSED) {
+            throw new WorkOrderException("已关闭的工单不可强制驳回");
+        }
+
+        WorkOrderStatus previousStatus = order.getStatus();
+        order.setStatus(WorkOrderStatus.REJECTED);
+        order.setRejectionReason(reason);
+        order.setClosedAt(LocalDateTime.now());
+        mapper.updateById(order);
+
+        log.info("[工单] 管理员强制驳回 id={} 原状态={} reason={}", workOrderId, previousStatus, reason);
+
+        eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
+                this, order, previousStatus, ACTION_FORCE_REJECT,
+                null, Map.of("reason", reason, "forceReject", true)));
 
         return order;
     }

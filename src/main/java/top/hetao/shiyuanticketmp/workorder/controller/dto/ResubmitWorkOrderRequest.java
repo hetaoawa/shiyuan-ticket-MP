@@ -1,15 +1,16 @@
 package top.hetao.shiyuanticketmp.workorder.controller.dto;
 
-import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 
 /**
- * 创建工单请求体。
+ * 被驳回工单重新提交请求体。
+ *
+ * <p>所有字段均为可选，仅传入需要修改的字段。
  */
 @Data
-public class CreateWorkOrderRequest {
+public class ResubmitWorkOrderRequest {
 
-    /** 工单标题（必填） */
+    /** 工单标题 */
     private String title;
 
     /** 工单描述 */
@@ -21,9 +22,6 @@ public class CreateWorkOrderRequest {
     /** 目标地址 */
     private String targetAddress;
 
-    /** 工单类型（可选，不传则自动解析） */
-    private String type;
-
-    /** 优先级（1=低 2=中 3=高，默认 2） */
+    /** 优先级（1=低 2=中 3=高） */
     private Integer priority;
 }

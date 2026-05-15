@@ -1,16 +1,19 @@
 package top.hetao.shiyuanticketmp.auth.controller;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.AssignRolesRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.CreateUserRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.ResetPasswordRequest;
+import top.hetao.shiyuanticketmp.auth.controller.dto.SimpleUserDTO;
 import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateUserRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -34,6 +37,16 @@ public class UserController {
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("data", result);
+        return response;
+    }
+
+    @SaCheckLogin
+    @GetMapping("/simple")
+    public Map<String, Object> listSimple() {
+        List<SimpleUserDTO> users = userService.listSimpleUsers();
+        Map<String, Object> response = new HashMap<>();
+        response.put("code", 200);
+        response.put("data", users);
         return response;
     }
 
@@ -84,8 +97,14 @@ public class UserController {
 
     @SaCheckPermission("user:update")
     @PostMapping("/{id}/reset-password")
-    public Map<String, Object> resetPassword(@PathVariable Long id, @RequestBody ResetPasswordRequest request) {
-        userService.resetPassword(id, request.getNewPassword());
+    public Map<String, Object> resetPassword(@PathVariable Long id,
+                                             @RequestBody(required = false) ResetPasswordRequest request,
+                                             @RequestParam(required = false) String newPassword) {
+        String pwd = (request != null && request.getNewPassword() != null) ? request.getNewPassword() : newPassword;
+        if (pwd == null || pwd.isBlank()) {
+            throw new top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException("新密码不能为空");
+        }
+        userService.resetPassword(id, pwd);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "密码重置成功");

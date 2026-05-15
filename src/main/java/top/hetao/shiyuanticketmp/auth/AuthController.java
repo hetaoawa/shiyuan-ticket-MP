@@ -35,7 +35,7 @@ public class AuthController {
     @PostMapping("/login")
     public Map<String, Object> login(@RequestParam String username,
                                      @RequestParam String password) {
-        SysUser user = userService.getByUsername(username);
+        SysUser user = userService.getByUsernameIgnoreTenant(username);
         if (user == null) {
             throw new WorkOrderException("用户名或密码错误");
         }
@@ -51,8 +51,10 @@ public class AuthController {
         // Sa-Token 登录，loginId 使用用户 ID
         StpUtil.login(user.getId());
 
-        // 将租户 ID 写入 Sa-Token 会话，后续请求可从中提取
+        // 将租户 ID 和超管标志写入 Sa-Token 会话
         StpUtil.getSession().set("tenantId", user.getTenantId());
+        boolean isAdmin = userService.getRoleCodes(user.getId()).contains("SYSTEM_ADMIN");
+        StpUtil.getSession().set("isAdmin", isAdmin);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -82,7 +84,7 @@ public class AuthController {
     @GetMapping("/me")
     public Map<String, Object> me() {
         Long userId = StpUtil.getLoginIdAsLong();
-        SysUser user = userService.getById(userId);
+        SysUser user = userService.getByIdIgnoreTenant(userId);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
