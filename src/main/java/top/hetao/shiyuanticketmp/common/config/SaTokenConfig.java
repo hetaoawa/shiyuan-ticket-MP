@@ -19,6 +19,7 @@ import java.util.List;
  *
  * <p>职责：
  * <ol>
+ *   <li>注册内部签名校验拦截器（最先执行，校验前端请求头）</li>
  *   <li>注册 Sa-Token 拦截器，对所有接口进行登录校验（排除白名单路径）</li>
  *   <li>注册租户上下文拦截器，从 Sa-Token 会话中提取 tenantId 写入 TenantContext</li>
  *   <li>提供 StpInterface 实现，从数据库查询真实角色和权限</li>
@@ -45,8 +46,25 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/favicon.ico"
     };
 
+    private final InternalSignatureInterceptor internalSignatureInterceptor;
+
+    public SaTokenConfig(InternalSignatureInterceptor internalSignatureInterceptor) {
+        this.internalSignatureInterceptor = internalSignatureInterceptor;
+    }
+
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
+        // 内部签名校验拦截器（最先执行，order=-1）
+        registry.addInterceptor(internalSignatureInterceptor)
+                .addPathPatterns("/api/**")
+                .excludePathPatterns(
+                        "/api/webhook",
+                        "/api/webhook/**",
+                        "/error",
+                        "/favicon.ico"
+                )
+                .order(-1);
+
         // Sa-Token 登录校验拦截器
         registry.addInterceptor(new SaInterceptor(handle -> {
                     // checkLogin 会校验当前请求是否已登录
