@@ -8,6 +8,8 @@ import org.springframework.stereotype.Service;
 import top.hetao.shiyuanticketmp.audit.entity.SysAuditLog;
 import top.hetao.shiyuanticketmp.audit.mapper.SysAuditLogMapper;
 
+import java.time.LocalDateTime;
+
 /**
  * 审计日志服务。
  */
@@ -23,11 +25,18 @@ public class AuditLogService extends ServiceImpl<SysAuditLogMapper, SysAuditLog>
      * @param pageSize 每页条数
      * @return 分页结果
      */
-    public IPage<SysAuditLog> listPage(String bizType, Long bizId, int page, int pageSize) {
+    public IPage<SysAuditLog> listPage(String bizType, Long bizId, int page, int pageSize,
+                                       LocalDateTime createdStartTime, LocalDateTime createdEndTime) {
         LambdaQueryWrapper<SysAuditLog> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(SysAuditLog::getBizType, bizType);
         if (bizId != null) {
             wrapper.eq(SysAuditLog::getBizId, bizId);
+        }
+        if (createdStartTime != null) {
+            wrapper.ge(SysAuditLog::getCreatedAt, createdStartTime);
+        }
+        if (createdEndTime != null) {
+            wrapper.le(SysAuditLog::getCreatedAt, createdEndTime);
         }
         wrapper.orderByDesc(SysAuditLog::getCreatedAt);
         return page(new Page<>(page, pageSize), wrapper);

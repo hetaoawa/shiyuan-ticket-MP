@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.service.WorkOrderCommentService;
@@ -16,9 +17,11 @@ import top.hetao.shiyuanticketmp.workorder.controller.dto.CreateWorkOrderRequest
 import top.hetao.shiyuanticketmp.workorder.controller.dto.ResubmitWorkOrderRequest;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
+import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
 
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
 import java.util.List;
@@ -59,8 +62,8 @@ public class WorkOrderController {
         order.setSubmitterId(StpUtil.getLoginIdAsLong());
 
         // 如果前端传了类型则使用，否则由 Service 层自动解析
-        if (request.getType() != null) {
-            order.setType(top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType.valueOf(request.getType()));
+        if (request.getType() != null && !request.getType().isBlank()) {
+            order.setType(WorkOrderType.valueOf(request.getType()));
         }
 
         WorkOrder created = workOrderService.create(order);
@@ -79,10 +82,12 @@ public class WorkOrderController {
      */
     @GetMapping
     public Map<String, Object> list(@RequestParam(defaultValue = "1") int page,
-                                    @RequestParam(defaultValue = "10") int pageSize,
-                                    @RequestParam(required = false) WorkOrderStatus status,
-                                    @RequestParam(required = false) String trackingNo) {
-        IPage<WorkOrder> pageResult = workOrderService.listPage(page, pageSize, status, trackingNo);
+                                     @RequestParam(defaultValue = "10") int pageSize,
+                                     @RequestParam(required = false) WorkOrderStatus status,
+                                     @RequestParam(required = false) String trackingNo,
+                                     @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdStartTime,
+                                     @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdEndTime) {
+        IPage<WorkOrder> pageResult = workOrderService.listPage(page, pageSize, status, trackingNo, createdStartTime, createdEndTime);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -177,6 +182,9 @@ public class WorkOrderController {
         updateData.setTrackingNo(request.getTrackingNo());
         updateData.setTargetAddress(request.getTargetAddress());
         updateData.setPriority(request.getPriority());
+        if (request.getType() != null && !request.getType().isBlank()) {
+            updateData.setType(WorkOrderType.valueOf(request.getType()));
+        }
 
         WorkOrder order = workOrderService.resubmit(id, updateData);
 
@@ -288,8 +296,10 @@ public class WorkOrderController {
     @GetMapping("/export")
     @SaCheckPermission("workorder:export")
     public ResponseEntity<byte[]> export(@RequestParam(required = false) WorkOrderStatus status,
-                                         @RequestParam(required = false) String trackingNo) {
-        List<WorkOrder> orders = workOrderService.listForExport(status, trackingNo);
+                                         @RequestParam(required = false) String trackingNo,
+                                         @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdStartTime,
+                                         @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdEndTime) {
+        List<WorkOrder> orders = workOrderService.listForExport(status, trackingNo, createdStartTime, createdEndTime);
 
         StringBuilder csv = new StringBuilder();
         // CSV header (BOM for Excel)

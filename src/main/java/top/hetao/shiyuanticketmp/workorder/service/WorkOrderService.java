@@ -4,8 +4,8 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 
+import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 工单业务服务接口
@@ -60,7 +60,8 @@ public interface WorkOrderService {
      * @param trackingNo 物流单号模糊搜索（可选）
      * @return 分页结果
      */
-    IPage<WorkOrder> listPage(int page, int pageSize, WorkOrderStatus status, String trackingNo);
+    IPage<WorkOrder> listPage(int page, int pageSize, WorkOrderStatus status, String trackingNo,
+                              LocalDateTime createdStartTime, LocalDateTime createdEndTime);
 
     /**
      * 批量派发工单。
@@ -74,7 +75,8 @@ public interface WorkOrderService {
     /**
      * 按条件查询工单列表（不分页，用于导出）。
      */
-    List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo);
+    List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo,
+                                  LocalDateTime createdStartTime, LocalDateTime createdEndTime);
 
     /**
      * 被驳回工单重新提交，状态 REJECTED → PENDING。

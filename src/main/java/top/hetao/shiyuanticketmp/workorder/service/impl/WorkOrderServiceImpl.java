@@ -118,8 +118,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Transactional
     public WorkOrder create(WorkOrder workOrder) {
         workOrder.setStatus(WorkOrderStatus.PENDING);
-        // 自动解析工单类型
-        workOrder.setType(typeResolver.resolve(workOrder.getTitle(), workOrder.getDescription()));
+        if (workOrder.getType() == null) {
+            workOrder.setType(typeResolver.resolve(workOrder.getTitle(), workOrder.getDescription()));
+        }
         mapper.insert(workOrder);
         log.info("[工单] 创建成功 id={} title={} type={}", workOrder.getId(), workOrder.getTitle(), workOrder.getType());
 
@@ -276,6 +277,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         if (updateData.getPriority() != null) {
             order.setPriority(updateData.getPriority());
         }
+        if (updateData.getType() != null) {
+            order.setType(updateData.getType());
+        }
 
         // 清除驳回信息，状态回到 PENDING
         order.setStatus(WorkOrderStatus.PENDING);
@@ -283,9 +287,6 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         order.setClosedAt(null);
         order.setAssigneeId(null);
         order.setAssignedAt(null);
-
-        // 重新解析工单类型
-        order.setType(typeResolver.resolve(order.getTitle(), order.getDescription()));
 
         mapper.updateById(order);
         log.info("[工单] 重新提交成功 id={} title={}", workOrderId, order.getTitle());
@@ -342,15 +343,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
     @Override
     @Transactional(readOnly = true)
-    public IPage<WorkOrder> listPage(int page, int pageSize, WorkOrderStatus status, String trackingNo) {
-        LambdaQueryWrapper<WorkOrder> wrapper = new LambdaQueryWrapper<>();
-        if (status != null) {
-            wrapper.eq(WorkOrder::getStatus, status);
-        }
-        if (trackingNo != null && !trackingNo.isBlank()) {
-            wrapper.like(WorkOrder::getTrackingNo, trackingNo);
-        }
-        wrapper.orderByDesc(WorkOrder::getCreatedAt);
+    public IPage<WorkOrder> listPage(int page, int pageSize, WorkOrderStatus status, String trackingNo,
+                                     LocalDateTime createdStartTime, LocalDateTime createdEndTime) {
+        LambdaQueryWrapper<WorkOrder> wrapper = buildQueryWrapper(status, trackingNo, createdStartTime, createdEndTime);
         return mapper.selectPage(new Page<>(page, pageSize), wrapper);
     }
 
@@ -396,7 +391,15 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo) {
+    public List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo,
+                                         LocalDateTime createdStartTime, LocalDateTime createdEndTime) {
+        LambdaQueryWrapper<WorkOrder> wrapper = buildQueryWrapper(status, trackingNo, createdStartTime, createdEndTime);
+        return mapper.selectList(wrapper);
+    }
+
+    private LambdaQueryWrapper<WorkOrder> buildQueryWrapper(WorkOrderStatus status, String trackingNo,
+                                                            LocalDateTime createdStartTime,
+                                                            LocalDateTime createdEndTime) {
         LambdaQueryWrapper<WorkOrder> wrapper = new LambdaQueryWrapper<>();
         if (status != null) {
             wrapper.eq(WorkOrder::getStatus, status);
@@ -404,8 +407,14 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         if (trackingNo != null && !trackingNo.isBlank()) {
             wrapper.like(WorkOrder::getTrackingNo, trackingNo);
         }
+        if (createdStartTime != null) {
+            wrapper.ge(WorkOrder::getCreatedAt, createdStartTime);
+        }
+        if (createdEndTime != null) {
+            wrapper.le(WorkOrder::getCreatedAt, createdEndTime);
+        }
         wrapper.orderByDesc(WorkOrder::getCreatedAt);
-        return mapper.selectList(wrapper);
+        return wrapper;
     }
 
     // ----------------------------------------------------------------

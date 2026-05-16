@@ -22,6 +22,9 @@ public class ResubmitWorkOrderRequest {
     /** 目标地址 */
     private String targetAddress;
 
+    /** 工单类型（可选，不传则不修改） */
+    private String type;
+
     /** 优先级（1=低 2=中 3=高） */
     private Integer priority;
 }
