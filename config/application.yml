@@ -1,0 +1,106 @@
+# =============================================================================
+# 外部配置模板 —— 放在 jar 包同级目录的 config/ 下，由 Spring Boot 自动加载
+# 运行时使用: java -jar shiyuan-ticket-MP.jar --spring.config.additional-location=config/
+# =============================================================================
+
+server:
+  port: 9860
+  error:
+    include-message: always
+    include-binding-errors: always
+  # --- HTTPS 配置（取消注释以启用） ---
+  # ssl:
+  #   enabled: true
+  #   key-store: config/certs/keystore.p12
+  #   key-store-password: ${SSL_KEY_STORE_PASSWORD}
+  #   key-store-type: PKCS12
+
+spring:
+  config:
+    import: optional:file:.env.local[.properties]
+  datasource:
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:test_shiyuan_MP}?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD}
+      database: ${REDIS_DATABASE:2}
+      timeout: 10000
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  configuration:
+    default-enum-type-handler: org.apache.ibatis.type.EnumTypeHandler
+    map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      id-type: assign_id
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+# Sa-Token 配置
+sa-token:
+  token-name: Authorization
+  token-prefix: Bearer
+  timeout: 86400
+  active-timeout: -1
+  is-concurrent: true
+  is-share: true
+  token-style: uuid
+  is-log: false
+
+# 内部请求签名校验配置
+internal:
+  signature:
+    value: ${INTERNAL_SIGNATURE_VALUE:change-me-to-a-random-secret}
+  timestamp:
+    tolerance-seconds: 300
+
+# WebHook 配置
+webhook:
+  aggregate-delay-seconds: 10
+  max-retry: 5
+  base-delay-ms: 500
+  timeout-seconds: 20
+  dingtalk:
+    access-token: ${DINGTALK_ACCESS_TOKEN}
+    secret: ${DINGTALK_SECRET}
+  cargo-owner:
+    url: ${CARGO_OWNER_WEBHOOK_URL}
+    authorization: ${CARGO_OWNER_AUTHORIZATION}
+    receive:
+      app-id: ${CARGO_OWNER_APP_ID:qcy_workorder_002}
+      private-key: ${CARGO_OWNER_RSA_PRIVATE_KEY}
+  secret: ${WEBHOOK_SECRET:change-me}
+
+# S3 兼容对象存储配置
+s3:
+  endpoint: ${S3_ENDPOINT}
+  access-key: ${S3_ACCESS_KEY}
+  secret-key: ${S3_SECRET_KEY}
+  region: ${S3_REGION:us-east-1}
+  bucket: ${S3_BUCKET:21149-shiyuan-ticket-mp-file}
+  path-style: true
+  presign-expire-seconds: 120
+
+# 物流查询接口配置
+express:
+  appcode: ${EXPRESS_APPCODE}
+
+# AI 智能解析配置
+ai:
+  parse:
+    api-url: ${AI_PARSE_API_URL:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}
+    api-key: ${AI_PARSE_API_KEY}
+    model: qwen-flash
+    timeout-seconds: 30
