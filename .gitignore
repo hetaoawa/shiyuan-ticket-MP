@@ -34,3 +34,4 @@ build/
 
 ### OpenCode ###
 .env.local
+/src/main/resources/application-dev.yml
