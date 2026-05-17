@@ -8,6 +8,7 @@ import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 
+import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -44,8 +45,40 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     @Value("${webhook.cargo-owner.authorization}")
     private String authorization;
 
+    private String normalizedUrl;
+
     public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
         super(objectMapper, deadLetterService);
+    }
+
+    @PostConstruct
+    void init() {
+        if (targetUrl == null || targetUrl.isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 未配置或为空");
+        }
+        String trimmed = targetUrl.trim();
+        if (trimmed.startsWith("\"") || trimmed.startsWith("'")
+                || trimmed.endsWith("\"") || trimmed.endsWith("'")) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 不应包含引号，当前值: " + targetUrl);
+        }
+        URI uri;
+        try {
+            uri = URI.create(trimmed);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 格式非法: " + targetUrl, e);
+        }
+        String scheme = uri.getScheme();
+        if (scheme == null) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少协议（scheme），当前值: " + targetUrl);
+        }
+        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 协议必须为 http/https，当前值: " + targetUrl);
+        }
+        if (uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少主机名（host），当前值: " + targetUrl);
+        }
+        normalizedUrl = trimmed;
+        log.info("[CargoOwner] 货主 WebHook URL 已校验: {}", normalizedUrl);
     }
 
     @Override
@@ -55,7 +88,7 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     @Override
     protected String buildRequestUrl() {
-        return targetUrl;
+        return normalizedUrl;
     }
 
     @Override
