@@ -26,4 +26,10 @@ public class CreateWorkOrderRequest {
 
     /** 优先级（1=低 2=中 3=高，默认 2） */
     private Integer priority;
+
+    /** 外部发送人 ID（货主侧 senderStaffId，传入时必须映射到系统用户） */
+    private String senderStaffId;
+
+    /** 外部群 ID（货主侧 conversationId） */
+    private String conversationId;
 }

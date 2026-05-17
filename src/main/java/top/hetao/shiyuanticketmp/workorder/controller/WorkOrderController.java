@@ -8,6 +8,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
+import top.hetao.shiyuanticketmp.auth.entity.SysUser;
+import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.service.WorkOrderCommentService;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.AddCommentRequest;
@@ -18,6 +20,7 @@ import top.hetao.shiyuanticketmp.workorder.controller.dto.ResubmitWorkOrderReque
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
+import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
 
 import java.nio.charset.StandardCharsets;
@@ -38,17 +41,22 @@ public class WorkOrderController {
 
     private final WorkOrderService workOrderService;
     private final WorkOrderCommentService commentService;
+    private final UserService userService;
 
     public WorkOrderController(WorkOrderService workOrderService,
-                               WorkOrderCommentService commentService) {
+                               WorkOrderCommentService commentService,
+                               UserService userService) {
         this.workOrderService = workOrderService;
         this.commentService = commentService;
+        this.userService = userService;
     }
 
     /**
      * 创建工单。
      *
      * <p>需要 {@code workorder:create} 权限。
+     * 若传入 {@code senderStaffId}，则通过外部用户 ID 映射提交人；
+     * 否则使用当前登录用户作为提交人。
      */
     @PostMapping
     @SaCheckPermission("workorder:create")
@@ -59,7 +67,24 @@ public class WorkOrderController {
         order.setTrackingNo(request.getTrackingNo());
         order.setTargetAddress(request.getTargetAddress());
         order.setPriority(request.getPriority() != null ? request.getPriority() : 2);
-        order.setSubmitterId(StpUtil.getLoginIdAsLong());
+
+        // 外部用户 ID 关联逻辑
+        String senderStaffId = request.getSenderStaffId();
+        if (senderStaffId != null && !senderStaffId.isBlank()) {
+            SysUser externalUser = userService.getByExternalUserIdIgnoreTenant(senderStaffId);
+            if (externalUser == null) {
+                throw new WorkOrderException("未找到外部用户ID对应的系统用户: " + senderStaffId);
+            }
+            order.setSubmitterId(externalUser.getId());
+            order.setSenderStaffId(senderStaffId);
+        } else {
+            order.setSubmitterId(StpUtil.getLoginIdAsLong());
+        }
+
+        String conversationId = request.getConversationId();
+        if (conversationId != null && !conversationId.isBlank()) {
+            order.setConversationId(conversationId);
+        }
 
         // 如果前端传了类型则使用，否则由 Service 层自动解析
         if (request.getType() != null && !request.getType().isBlank()) {

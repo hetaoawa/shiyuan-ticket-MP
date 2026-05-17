@@ -60,6 +60,11 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     }
 
     @Transactional(readOnly = true)
+    public SysUser getByExternalUserIdIgnoreTenant(String externalUserId) {
+        return baseMapper.selectByExternalUserIdIgnoreTenant(externalUserId);
+    }
+
+    @Transactional(readOnly = true)
     public List<String> getRoleCodes(Long userId) {
         return roleMapper.selectRoleCodesByUserId(userId);
     }
@@ -87,12 +92,20 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         if (getByUsername(request.getUsername()) != null) {
             throw new WorkOrderException("用户名已存在: " + request.getUsername());
         }
+        String extId = normalizeBlank(request.getExternalUserId());
+        if (extId != null) {
+            SysUser existing = baseMapper.selectByExternalUserIdIgnoreTenant(extId);
+            if (existing != null) {
+                throw new WorkOrderException("外部用户ID已被其他用户绑定: " + extId);
+            }
+        }
         SysUser user = new SysUser();
         user.setUsername(request.getUsername());
         user.setPassword(passwordEncoder.encode(request.getPassword()));
         user.setNickname(request.getNickname());
         user.setPhone(request.getPhone());
         user.setEmail(request.getEmail());
+        user.setExternalUserId(extId);
         user.setStatus(1);
         save(user);
         return user;
@@ -108,6 +121,16 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         if (request.getPhone() != null) user.setPhone(request.getPhone());
         if (request.getEmail() != null) user.setEmail(request.getEmail());
         if (request.getStatus() != null) user.setStatus(request.getStatus());
+        if (request.getExternalUserId() != null) {
+            String extId = normalizeBlank(request.getExternalUserId());
+            if (extId != null) {
+                SysUser existing = baseMapper.selectByExternalUserIdIgnoreTenant(extId);
+                if (existing != null && !existing.getId().equals(userId)) {
+                    throw new WorkOrderException("外部用户ID已被其他用户绑定: " + extId);
+                }
+            }
+            user.setExternalUserId(extId);
+        }
         updateById(user);
     }
 
@@ -157,5 +180,9 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
                     return dto;
                 })
                 .collect(Collectors.toList());
+    }
+
+    private static String normalizeBlank(String value) {
+        return (value == null || value.isBlank()) ? null : value;
     }
 }

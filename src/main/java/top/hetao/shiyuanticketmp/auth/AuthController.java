@@ -97,6 +97,7 @@ public class AuthController {
         result.put("nickname", user.getNickname());
         result.put("phone", user.getPhone());
         result.put("email", user.getEmail());
+        result.put("externalUserId", user.getExternalUserId());
         result.put("tenantId", user.getTenantId());
         result.put("roles", userService.getRoleCodes(userId));
         result.put("permissions", userService.getPermissionCodes(userId));

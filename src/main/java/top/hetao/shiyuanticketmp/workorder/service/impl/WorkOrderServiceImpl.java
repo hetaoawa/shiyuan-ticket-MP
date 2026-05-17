@@ -117,6 +117,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder create(WorkOrder workOrder) {
+        if (workOrder.getSubmitterId() == null) {
+            throw new WorkOrderException("工单提交人不能为空");
+        }
         workOrder.setStatus(WorkOrderStatus.PENDING);
         if (workOrder.getType() == null) {
             workOrder.setType(typeResolver.resolve(workOrder.getTitle(), workOrder.getDescription()));

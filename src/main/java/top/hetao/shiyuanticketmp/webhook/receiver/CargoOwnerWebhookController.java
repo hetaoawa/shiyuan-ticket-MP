@@ -8,6 +8,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.ai.AiParseService;
+import top.hetao.shiyuanticketmp.auth.entity.SysUser;
+import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
@@ -36,15 +38,18 @@ public class CargoOwnerWebhookController {
     private final ObjectMapper objectMapper;
     private final CargoOwnerSignVerifier signVerifier;
     private final AiParseService aiParseService;
+    private final UserService userService;
 
     public CargoOwnerWebhookController(WorkOrderService workOrderService,
                                          ObjectMapper objectMapper,
                                          CargoOwnerSignVerifier signVerifier,
-                                         AiParseService aiParseService) {
+                                         AiParseService aiParseService,
+                                         UserService userService) {
         this.workOrderService = workOrderService;
         this.objectMapper = objectMapper;
         this.signVerifier = signVerifier;
         this.aiParseService = aiParseService;
+        this.userService = userService;
     }
 
     /**
@@ -84,16 +89,37 @@ public class CargoOwnerWebhookController {
                 ));
             }
 
+            // 3. 校验 senderStaffId 必填
+            if (senderStaffId == null || senderStaffId.isBlank()) {
+                log.warn("[货主入站] senderStaffId 缺失");
+                return ResponseEntity.badRequest().body(Map.of(
+                        "code", 400,
+                        "success", false,
+                        "msg", "senderStaffId 缺失，无法关联系统用户"
+                ));
+            }
+
+            // 4. 通过 externalUserId 查找关联的系统用户
+            SysUser submitter = userService.getByExternalUserIdIgnoreTenant(senderStaffId);
+            if (submitter == null) {
+                log.warn("[货主入站] 未找到关联的系统用户 externalUserId={}", senderStaffId);
+                return ResponseEntity.badRequest().body(Map.of(
+                        "code", 400,
+                        "success", false,
+                        "msg", "未找到外部用户ID对应的系统用户: " + senderStaffId
+                ));
+            }
+
             // 截断超长输入
             if (content.length() > MAX_CONTENT_LENGTH) {
                 content = content.substring(0, MAX_CONTENT_LENGTH);
             }
 
-            log.info("[货主入站] 验签通过，收到消息 conversationId={} senderNick={} contentPreview={}",
-                    conversationId, senderNick,
+            log.info("[货主入站] 验签通过，收到消息 conversationId={} senderNick={} senderStaffId={} contentPreview={}",
+                    conversationId, senderNick, senderStaffId,
                     content.length() > 50 ? content.substring(0, 50) + "..." : content);
 
-            // 3. 调用 AI 解析消息内容
+            // 5. 调用 AI 解析消息内容
             String aiResult = aiParseService.parse(content);
             JsonNode parsed = objectMapper.readTree(aiResult);
 
@@ -110,7 +136,7 @@ public class CargoOwnerWebhookController {
                 type = WorkOrderType.OTHER;
             }
 
-            // 4. 创建工单
+            // 6. 创建工单
             WorkOrder order = new WorkOrder();
             order.setTitle(title);
             order.setDescription(description);
@@ -121,6 +147,7 @@ public class CargoOwnerWebhookController {
             order.setStatus(WorkOrderStatus.PENDING);
             order.setConversationId(conversationId);
             order.setSenderStaffId(senderStaffId);
+            order.setSubmitterId(submitter.getId());
 
             WorkOrder created = workOrderService.create(order);
 
