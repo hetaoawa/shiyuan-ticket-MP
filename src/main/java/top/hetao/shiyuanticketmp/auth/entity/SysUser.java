@@ -1,6 +1,7 @@
 package top.hetao.shiyuanticketmp.auth.entity;
 
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import top.hetao.shiyuanticketmp.common.entity.BaseEntity;
@@ -17,6 +18,7 @@ public class SysUser extends BaseEntity {
     private String username;
 
     /** 密码（BCrypt 加密） */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String password;
 
     /** 昵称 */

@@ -1,8 +1,10 @@
 package top.hetao.shiyuanticketmp.auth;
 
+import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
+import top.hetao.shiyuanticketmp.auth.controller.dto.ChangePasswordRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
@@ -69,6 +71,7 @@ public class AuthController {
     /**
      * 登出接口。
      */
+    @SaCheckLogin
     @PostMapping("/logout")
     public Map<String, Object> logout() {
         StpUtil.logout();
@@ -81,6 +84,7 @@ public class AuthController {
     /**
      * 获取当前登录用户信息。
      */
+    @SaCheckLogin
     @GetMapping("/me")
     public Map<String, Object> me() {
         Long userId = StpUtil.getLoginIdAsLong();
@@ -91,10 +95,75 @@ public class AuthController {
         result.put("userId", userId);
         result.put("username", user.getUsername());
         result.put("nickname", user.getNickname());
+        result.put("phone", user.getPhone());
+        result.put("email", user.getEmail());
         result.put("tenantId", user.getTenantId());
         result.put("roles", userService.getRoleCodes(userId));
         result.put("permissions", userService.getPermissionCodes(userId));
         result.put("tokenTimeout", StpUtil.getTokenTimeout());
+        return result;
+    }
+
+    /**
+     * 修改当前登录用户密码。
+     *
+     * @param request 包含旧密码和新密码
+     * @return 成功响应
+     */
+    @SaCheckLogin
+    @PutMapping("/password")
+    public Map<String, Object> changePassword(@RequestBody ChangePasswordRequest request) {
+        if (request.getOldPassword() == null || request.getOldPassword().isBlank()) {
+            throw new WorkOrderException("旧密码不能为空");
+        }
+        if (request.getNewPassword() == null || request.getNewPassword().isBlank()) {
+            throw new WorkOrderException("新密码不能为空");
+        }
+
+        Long userId = StpUtil.getLoginIdAsLong();
+        SysUser user = userService.getByIdIgnoreTenant(userId);
+        if (user == null) {
+            throw new WorkOrderException("用户不存在");
+        }
+
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
+            throw new WorkOrderException("旧密码不正确");
+        }
+
+        userService.resetPassword(userId, request.getNewPassword());
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "密码修改成功");
+        return result;
+    }
+
+    /**
+     * 更新当前登录用户个人信息（昵称、手机号、邮箱）。
+     */
+    @SaCheckLogin
+    @PutMapping("/profile")
+    public Map<String, Object> updateProfile(@RequestBody Map<String, String> body) {
+        Long userId = StpUtil.getLoginIdAsLong();
+        SysUser user = userService.getByIdIgnoreTenant(userId);
+        if (user == null) {
+            throw new WorkOrderException("用户不存在");
+        }
+
+        if (body.containsKey("nickname") && body.get("nickname") != null) {
+            user.setNickname(body.get("nickname"));
+        }
+        if (body.containsKey("phone")) {
+            user.setPhone(body.get("phone"));
+        }
+        if (body.containsKey("email")) {
+            user.setEmail(body.get("email"));
+        }
+        userService.updateById(user);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "个人信息更新成功");
         return result;
     }
 }
