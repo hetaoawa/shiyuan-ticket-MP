@@ -75,6 +75,7 @@ webhook:
   dingtalk:
     access-token: ${DINGTALK_ACCESS_TOKEN}
     secret: ${DINGTALK_SECRET}
+    work-order-detail-base-url: ${DINGTALK_WORK_ORDER_DETAIL_BASE_URL}
   cargo-owner:
     url: ${CARGO_OWNER_WEBHOOK_URL}
     authorization: ${CARGO_OWNER_AUTHORIZATION}
