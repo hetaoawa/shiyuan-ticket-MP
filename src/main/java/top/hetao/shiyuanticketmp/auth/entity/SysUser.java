@@ -32,4 +32,7 @@ public class SysUser extends BaseEntity {
 
     /** 状态 1=启用 0=禁用 */
     private Integer status;
+
+    /** 外部系统用户 ID（用于外部 WebHook 发起工单时关联系统用户） */
+    private String externalUserId;
 }
