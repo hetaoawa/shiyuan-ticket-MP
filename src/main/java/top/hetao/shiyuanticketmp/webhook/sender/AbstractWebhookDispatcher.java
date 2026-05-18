@@ -12,6 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.UUID;
 
+import org.springframework.beans.factory.annotation.Value;
+
 /**
  * WebHook 调度器抽象基类。
  *
@@ -26,9 +28,14 @@ public abstract class AbstractWebhookDispatcher {
     protected final ObjectMapper objectMapper;
     protected final WebhookDeadLetterService deadLetterService;
 
-    protected int maxRetry = 5;
-    protected long baseDelayMs = 500;
-    protected int timeoutSeconds = 10;
+    @Value("${webhook.max-retry:5}")
+    protected int maxRetry;
+
+    @Value("${webhook.base-delay-ms:500}")
+    protected long baseDelayMs;
+
+    @Value("${webhook.timeout-seconds:10}")
+    protected int timeoutSeconds;
 
     protected final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))

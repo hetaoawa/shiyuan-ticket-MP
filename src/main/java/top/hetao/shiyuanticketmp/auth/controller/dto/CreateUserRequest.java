@@ -10,4 +10,5 @@ public class CreateUserRequest {
     private String phone;
     private String email;
     private String externalUserId;
+    private Long tenantId;
 }

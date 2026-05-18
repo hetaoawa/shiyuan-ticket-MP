@@ -1,6 +1,6 @@
 -- init_schema.sql
 -- 独立初始化脚本，包含全部 12 张表结构 + 基础种子数据
--- 基于 db/migration V1-V14 及线上实际数据库状态生成
+-- 基于 db/migration V1-V15 及线上实际数据库状态生成
 
 SET NAMES utf8mb4;
 SET FOREIGN_KEY_CHECKS = 0;
@@ -22,6 +22,7 @@ CREATE TABLE `work_order` (
     `status`           VARCHAR(20)  NOT NULL COMMENT '状态: PENDING/IN_PROGRESS/CLOSED/REJECTED',
     `submitter_id`     BIGINT       NOT NULL COMMENT '提交人ID',
     `assignee_id`      BIGINT                COMMENT '处理人ID（派发后赋值）',
+    `assignee_role`    VARCHAR(64)           COMMENT '按角色派发时的角色编码',
     `resolution`       TEXT                  COMMENT '处理结论（关单时填写）',
     `rejection_reason` TEXT                  COMMENT '驳回原因',
     `created_at`       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -34,6 +35,7 @@ CREATE TABLE `work_order` (
     PRIMARY KEY (`id`),
     INDEX `idx_status`     (`status`),
     INDEX `idx_assignee`   (`assignee_id`),
+    INDEX `idx_assignee_role` (`assignee_role`),
     INDEX `idx_submitter`  (`submitter_id`),
     INDEX `idx_tenant`     (`tenant_id`),
     INDEX `idx_tracking_no`(`tracking_no`)
@@ -305,9 +307,9 @@ INSERT INTO `sys_role` (`id`, `tenant_id`, `role_code`, `role_name`) VALUES
 (3, 0,   'SYSTEM_ADMIN',    '系统管理员');
 
 -- ------------------------------------------------------------
--- sys_role_permission 角色权限关联（31 行，排除 orphan permission_id=20250513000000000）
--- 货主 (role_id=1): workorder:create, assign, view, resubmit, force-reject
--- 云仓管理员 (role_id=2): close, reject, view, resubmit
+-- sys_role_permission 角色权限关联（34 行，排除 orphan permission_id=20250513000000000）
+-- 货主 (role_id=1): workorder:create, assign, view, resubmit, force-reject, export, comment
+-- 云仓管理员 (role_id=2): close, reject, view, resubmit, comment
 -- 系统管理员 (role_id=3): 全部权限
 -- ------------------------------------------------------------
 INSERT INTO `sys_role_permission` (`id`, `role_id`, `permission_id`) VALUES
@@ -317,11 +319,14 @@ INSERT INTO `sys_role_permission` (`id`, `role_id`, `permission_id`) VALUES
 (3,   1, 2),
 (115, 1, 115),
 (116, 1, 116),
+(304, 1, 113),
+(305, 1, 114),
 -- 云仓管理员
 (4,   2, 3),
 (5,   2, 4),
 (6,   2, 5),
 (117, 2, 115),
+(303, 2, 114),
 -- 系统管理员
 (7,   3, 1),
 (8,   3, 2),
@@ -347,18 +352,33 @@ INSERT INTO `sys_role_permission` (`id`, `role_id`, `permission_id`) VALUES
 (114, 3, 114);
 
 -- ------------------------------------------------------------
--- sys_menu 菜单（9 行，排除已删除的菜单）
+-- sys_menu 菜单（20 行，排除已删除的菜单）
 -- ------------------------------------------------------------
 INSERT INTO `sys_menu` (`id`, `tenant_id`, `parent_id`, `menu_name`, `menu_code`, `path`, `icon`, `sort_order`, `menu_type`, `permission_code`, `visible`) VALUES
 (1001, 100, 0,    '工单管理', 'workorder',         '/workorder',          'file-text',  1,  'DIR',  NULL,              1),
 (1002, 100, 0,    '系统管理', 'system',             '/system',             'setting',    99, 'DIR',  NULL,              1),
 (2001, 100, 1001, '工单列表', 'workorder:list',     '/workorder/list',     'list',       1,  'MENU', 'workorder:view',  1),
 (2002, 100, 1001, '创建工单', 'workorder:create',   '/workorder/create',   'plus',       2,  'MENU', 'workorder:create',1),
-(3001, 100, 1002, '用户管理', 'system:user',        '/system/user',        'user',       1,  'MENU', NULL,              1),
-(3002, 100, 1002, '角色管理', 'system:role',        '/system/role',        'team',       2,  'MENU', NULL,              1),
-(3003, 100, 1002, '菜单管理', 'system:menu',        '/system/menu',        'menu',       3,  'MENU', NULL,              1),
+(3001, 100, 1002, '用户管理', 'system:user',        '/system/user',        'user',       1,  'MENU', 'user:view',       1),
+(3002, 100, 1002, '角色管理', 'system:role',        '/system/role',        'team',       2,  'MENU', 'role:view',       1),
+(3003, 100, 1002, '菜单管理', 'system:menu',        '/system/menu',        'menu',       3,  'MENU', 'menu:view',       1),
 (3004, 100, 1002, '死信管理', 'system:deadletter',  '/system/deadletter',  'warning',    4,  'MENU', 'deadletter:view', 1),
-(3005, 100, 1002, '审计日志', 'system:audit',       '/system/audit',       'file-search',5,  'MENU', NULL,              1);
+(3005, 100, 1002, '审计日志', 'system:audit',       '/system/audit',       'file-search',5,  'MENU', NULL,              1),
+-- 用户管理按钮
+(4001, 100, 3001, '新增用户', 'system:user:create', NULL, NULL, 1, 'BUTTON', 'user:create',   0),
+(4002, 100, 3001, '编辑用户', 'system:user:update', NULL, NULL, 2, 'BUTTON', 'user:update',   0),
+(4003, 100, 3001, '删除用户', 'system:user:delete', NULL, NULL, 3, 'BUTTON', 'user:delete',   0),
+-- 角色管理按钮
+(4004, 100, 3002, '新增角色', 'system:role:create', NULL, NULL, 1, 'BUTTON', 'role:create',   0),
+(4005, 100, 3002, '编辑角色', 'system:role:update', NULL, NULL, 2, 'BUTTON', 'role:update',   0),
+(4006, 100, 3002, '删除角色', 'system:role:delete', NULL, NULL, 3, 'BUTTON', 'role:delete',   0),
+-- 菜单管理按钮
+(4007, 100, 3003, '新增菜单', 'system:menu:create', NULL, NULL, 1, 'BUTTON', 'menu:create',   0),
+(4008, 100, 3003, '编辑菜单', 'system:menu:update', NULL, NULL, 2, 'BUTTON', 'menu:update',   0),
+(4009, 100, 3003, '删除菜单', 'system:menu:delete', NULL, NULL, 3, 'BUTTON', 'menu:delete',   0),
+-- 工单管理按钮
+(4010, 100, 1001, '工单评论', 'workorder:comment',  NULL, NULL, 3, 'BUTTON', 'workorder:comment', 0),
+(4011, 100, 1001, '工单导出', 'workorder:export',   NULL, NULL, 4, 'BUTTON', 'workorder:export',  0);
 
 -- ------------------------------------------------------------
 -- sys_user 用户（3 行）

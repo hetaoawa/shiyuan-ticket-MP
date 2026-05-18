@@ -50,6 +50,9 @@ public class WorkOrder extends BaseEntity {
     /** 处理人 ID（派发后赋值） */
     private Long assigneeId;
 
+    /** 按角色派发时的角色编码（如 WAREHOUSE_ADMIN） */
+    private String assigneeRole;
+
     /** 处理结论（关单时填写） */
     private String resolution;
 
@@ -67,4 +70,18 @@ public class WorkOrder extends BaseEntity {
 
     /** 货主侧发送人 ID（来自外部 WebHook 入站消息的 senderStaffId） */
     private String senderStaffId;
+
+    // ---- 以下为瞬态展示字段，不映射数据库 ----
+
+    /** 处理人用户昵称（按用户派发时由 Controller 层填充） */
+    @TableField(exist = false)
+    private String assigneeName;
+
+    /** 处理人角色名称（按角色派发时由 Controller 层填充） */
+    @TableField(exist = false)
+    private String assigneeRoleName;
+
+    /** 提交人用户昵称（由 Controller 层填充） */
+    @TableField(exist = false)
+    private String submitterName;
 }

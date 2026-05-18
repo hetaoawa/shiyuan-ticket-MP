@@ -1,6 +1,7 @@
 package top.hetao.shiyuanticketmp.workorder.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.slf4j.Logger;
@@ -9,6 +10,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
+import top.hetao.shiyuanticketmp.auth.entity.SysRole;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.workorder.cache.WorkOrderCacheManager;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
@@ -105,6 +107,16 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         return order;
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public WorkOrder getByIdWithAccessCheck(Long workOrderId, Long currentUserId, List<String> currentUserRoles) {
+        WorkOrder order = getById(workOrderId);
+        if (!canAccessOrder(order, currentUserId, currentUserRoles)) {
+            throw new WorkOrderException("无权查看此工单");
+        }
+        return order;
+    }
+
     // ----------------------------------------------------------------
     // 创建工单
     // ----------------------------------------------------------------
@@ -160,10 +172,17 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             throw new WorkOrderException("只能派发给云仓管理人员");
         }
 
+        LocalDateTime now = LocalDateTime.now();
         order.setAssigneeId(assigneeId);
+        order.setAssigneeRole(null);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
-        order.setAssignedAt(LocalDateTime.now());
-        mapper.updateById(order);
+        order.setAssignedAt(now);
+        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
+                .set(WorkOrder::getAssigneeId, assigneeId)
+                .set(WorkOrder::getAssigneeRole, null)
+                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
+                .set(WorkOrder::getAssignedAt, now)
+                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 派发成功 id={} assigneeId={}", workOrderId, assigneeId);
 
@@ -172,6 +191,61 @@ public class WorkOrderServiceImpl implements WorkOrderService {
                 assigneeId, Map.of("assigneeId", assigneeId)));
 
         return order;
+    }
+
+    /**
+     * 将工单按角色派发，状态 {@code PENDING → IN_PROGRESS}。
+     *
+     * <p>按角色派发时，工单的 {@code assigneeRole} 设置为角色编码，{@code assigneeId} 清空。
+     * 云仓侧用户只要持有该角色即可看到并处理此工单。
+     *
+     * @param workOrderId      工单主键
+     * @param assigneeRoleCode 角色编码（如 WAREHOUSE_ADMIN）
+     * @throws WorkOrderException 角色不存在或非云仓侧角色时
+     */
+    @Override
+    @Transactional
+    public WorkOrder assignByRole(Long workOrderId, String assigneeRoleCode) {
+        WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.PENDING);
+
+        // 校验角色存在且为云仓侧角色
+        validateWarehouseRole(assigneeRoleCode);
+
+        LocalDateTime now = LocalDateTime.now();
+        order.setAssigneeId(null);
+        order.setAssigneeRole(assigneeRoleCode);
+        order.setStatus(WorkOrderStatus.IN_PROGRESS);
+        order.setAssignedAt(now);
+        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
+                .set(WorkOrder::getAssigneeId, null)
+                .set(WorkOrder::getAssigneeRole, assigneeRoleCode)
+                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
+                .set(WorkOrder::getAssignedAt, now)
+                .eq(WorkOrder::getId, workOrderId));
+
+        log.info("[工单] 按角色派发成功 id={} assigneeRole={}", workOrderId, assigneeRoleCode);
+
+        eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
+                this, order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
+                null, Map.of("assigneeRoleCode", assigneeRoleCode)));
+
+        return order;
+    }
+
+    private void validateWarehouseRole(String roleCode) {
+        if (roleCode == null || roleCode.isBlank()) {
+            throw new WorkOrderException("角色编码不能为空");
+        }
+        // 仅允许云仓侧角色
+        if (!"WAREHOUSE_ADMIN".equals(roleCode)) {
+            throw new WorkOrderException("只能派发给云仓侧角色");
+        }
+        // 校验角色存在（用 selectList 避免 roleCode 跨租户重复时 TooManyResults）
+        List<SysRole> roles = roleMapper.selectList(
+                new LambdaQueryWrapper<SysRole>().eq(SysRole::getRoleCode, roleCode).last("LIMIT 1"));
+        if (roles.isEmpty()) {
+            throw new WorkOrderException("角色不存在: " + roleCode);
+        }
     }
 
     // ----------------------------------------------------------------
@@ -231,16 +305,27 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     public WorkOrder reject(Long workOrderId, String reason) {
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.IN_PROGRESS);
 
+        LocalDateTime now = LocalDateTime.now();
         order.setStatus(WorkOrderStatus.REJECTED);
         order.setRejectionReason(reason);
-        order.setClosedAt(LocalDateTime.now());
-        mapper.updateById(order);
+        order.setClosedAt(now);
+        order.setAssigneeId(null);
+        order.setAssigneeRole(null);
+        order.setAssignedAt(null);
+        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
+                .set(WorkOrder::getStatus, WorkOrderStatus.REJECTED)
+                .set(WorkOrder::getRejectionReason, reason)
+                .set(WorkOrder::getClosedAt, now)
+                .set(WorkOrder::getAssigneeId, null)
+                .set(WorkOrder::getAssigneeRole, null)
+                .set(WorkOrder::getAssignedAt, null)
+                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 驳回成功 id={} reason={}", workOrderId, reason);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
                 this, order, WorkOrderStatus.IN_PROGRESS, ACTION_REJECT,
-                order.getAssigneeId(), Map.of("reason", reason)));
+                null, Map.of("reason", reason)));
 
         return order;
     }
@@ -289,9 +374,24 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         order.setRejectionReason(null);
         order.setClosedAt(null);
         order.setAssigneeId(null);
+        order.setAssigneeRole(null);
         order.setAssignedAt(null);
 
-        mapper.updateById(order);
+        // 使用 LambdaUpdateWrapper 显式清除 null 字段，绕过 MyBatis-Plus 跳过 null 的默认行为
+        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
+                .set(WorkOrder::getStatus, WorkOrderStatus.PENDING)
+                .set(WorkOrder::getRejectionReason, null)
+                .set(WorkOrder::getClosedAt, null)
+                .set(WorkOrder::getAssigneeId, null)
+                .set(WorkOrder::getAssigneeRole, null)
+                .set(WorkOrder::getAssignedAt, null)
+                .set(WorkOrder::getTitle, order.getTitle())
+                .set(WorkOrder::getDescription, order.getDescription())
+                .set(WorkOrder::getTrackingNo, order.getTrackingNo())
+                .set(WorkOrder::getTargetAddress, order.getTargetAddress())
+                .set(WorkOrder::getPriority, order.getPriority())
+                .set(WorkOrder::getType, order.getType())
+                .eq(WorkOrder::getId, workOrderId));
         log.info("[工单] 重新提交成功 id={} title={}", workOrderId, order.getTitle());
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
@@ -326,10 +426,21 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         }
 
         WorkOrderStatus previousStatus = order.getStatus();
+        LocalDateTime now = LocalDateTime.now();
         order.setStatus(WorkOrderStatus.REJECTED);
         order.setRejectionReason(reason);
-        order.setClosedAt(LocalDateTime.now());
-        mapper.updateById(order);
+        order.setClosedAt(now);
+        order.setAssigneeId(null);
+        order.setAssigneeRole(null);
+        order.setAssignedAt(null);
+        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
+                .set(WorkOrder::getStatus, WorkOrderStatus.REJECTED)
+                .set(WorkOrder::getRejectionReason, reason)
+                .set(WorkOrder::getClosedAt, now)
+                .set(WorkOrder::getAssigneeId, null)
+                .set(WorkOrder::getAssigneeRole, null)
+                .set(WorkOrder::getAssignedAt, null)
+                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 管理员强制驳回 id={} 原状态={} reason={}", workOrderId, previousStatus, reason);
 
@@ -347,8 +458,10 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional(readOnly = true)
     public IPage<WorkOrder> listPage(int page, int pageSize, WorkOrderStatus status, String trackingNo,
-                                     LocalDateTime createdStartTime, LocalDateTime createdEndTime) {
+                                     LocalDateTime createdStartTime, LocalDateTime createdEndTime,
+                                     Long currentUserId, List<String> currentUserRoles) {
         LambdaQueryWrapper<WorkOrder> wrapper = buildQueryWrapper(status, trackingNo, createdStartTime, createdEndTime);
+        applyVisibilityFilter(wrapper, currentUserId, currentUserRoles);
         return mapper.selectPage(new Page<>(page, pageSize), wrapper);
     }
 
@@ -388,6 +501,38 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         return successCount;
     }
 
+    @Override
+    @Transactional
+    public int batchAssignByRole(List<Long> workOrderIds, String assigneeRoleCode) {
+        if (workOrderIds == null || workOrderIds.isEmpty()) {
+            throw new WorkOrderException("工单ID列表不能为空");
+        }
+        if (assigneeRoleCode == null || assigneeRoleCode.isBlank()) {
+            throw new WorkOrderException("角色编码不能为空");
+        }
+
+        int successCount = 0;
+        List<String> errors = new ArrayList<>();
+
+        for (Long orderId : workOrderIds) {
+            try {
+                assignByRole(orderId, assigneeRoleCode);
+                successCount++;
+            } catch (WorkOrderException e) {
+                errors.add("工单[" + orderId + "]: " + e.getMessage());
+            }
+        }
+
+        if (!errors.isEmpty()) {
+            log.warn("[工单] 批量按角色派发部分失败: {}", String.join("; ", errors));
+        }
+
+        log.info("[工单] 批量按角色派发完成 总数={} 成功={} 失败={}",
+                workOrderIds.size(), successCount, errors.size());
+
+        return successCount;
+    }
+
     // ----------------------------------------------------------------
     // 导出查询
     // ----------------------------------------------------------------
@@ -395,8 +540,10 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional(readOnly = true)
     public List<WorkOrder> listForExport(WorkOrderStatus status, String trackingNo,
-                                         LocalDateTime createdStartTime, LocalDateTime createdEndTime) {
+                                         LocalDateTime createdStartTime, LocalDateTime createdEndTime,
+                                         Long currentUserId, List<String> currentUserRoles) {
         LambdaQueryWrapper<WorkOrder> wrapper = buildQueryWrapper(status, trackingNo, createdStartTime, createdEndTime);
+        applyVisibilityFilter(wrapper, currentUserId, currentUserRoles);
         return mapper.selectList(wrapper);
     }
 
@@ -418,6 +565,83 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         }
         wrapper.orderByDesc(WorkOrder::getCreatedAt);
         return wrapper;
+    }
+
+    // ----------------------------------------------------------------
+    // 私有：可见性过滤
+    // ----------------------------------------------------------------
+
+    /**
+     * 判断当前用户是否可以访问指定工单。
+     *
+     * <ul>
+     *   <li>SYSTEM_ADMIN：可以查看所有工单</li>
+     *   <li>CARGO_OWNER：只能查看自己提交的工单</li>
+     *   <li>WAREHOUSE_ADMIN：只能查看分配给自己或分配给自己持有角色的工单</li>
+     *   <li>多角色：取并集</li>
+     * </ul>
+     */
+    private boolean canAccessOrder(WorkOrder order, Long currentUserId, List<String> currentUserRoles) {
+        if (order == null || currentUserRoles == null || currentUserRoles.isEmpty()) {
+            return false;
+        }
+        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+            return true;
+        }
+        boolean canAccess = false;
+        if (currentUserRoles.contains("CARGO_OWNER")) {
+            if (currentUserId != null && currentUserId.equals(order.getSubmitterId())) {
+                canAccess = true;
+            }
+        }
+        if (currentUserRoles.contains("WAREHOUSE_ADMIN")) {
+            if (currentUserId != null && currentUserId.equals(order.getAssigneeId())) {
+                canAccess = true;
+            }
+            if (order.getAssigneeRole() != null && currentUserRoles.contains(order.getAssigneeRole())) {
+                canAccess = true;
+            }
+        }
+        return canAccess;
+    }
+
+    /**
+     * 在查询条件上叠加可见性过滤。
+     *
+     * <p>SYSTEM_ADMIN 不加额外条件；其他角色按规则用 OR 组合。
+     */
+    private void applyVisibilityFilter(LambdaQueryWrapper<WorkOrder> wrapper,
+                                       Long currentUserId, List<String> currentUserRoles) {
+        if (currentUserRoles == null || currentUserRoles.isEmpty()) {
+            // 无角色：只能看到自己提交的
+            wrapper.eq(WorkOrder::getSubmitterId, currentUserId);
+            return;
+        }
+        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+            return; // 不加额外条件
+        }
+
+        // 收集所有可见条件，用 OR 连接
+        wrapper.and(w -> {
+            boolean hasCondition = false;
+            if (currentUserRoles.contains("CARGO_OWNER")) {
+                w.eq(WorkOrder::getSubmitterId, currentUserId);
+                hasCondition = true;
+            }
+            if (currentUserRoles.contains("WAREHOUSE_ADMIN")) {
+                if (hasCondition) {
+                    w.or();
+                }
+                w.eq(WorkOrder::getAssigneeId, currentUserId);
+                hasCondition = true;
+                w.or();
+                w.in(WorkOrder::getAssigneeRole, currentUserRoles);
+            }
+            if (!hasCondition) {
+                // 非预期角色：看不到任何工单
+                w.apply("1 = 0");
+            }
+        });
     }
 
     // ----------------------------------------------------------------
