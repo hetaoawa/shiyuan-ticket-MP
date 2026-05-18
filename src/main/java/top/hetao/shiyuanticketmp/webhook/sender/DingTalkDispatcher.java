@@ -219,7 +219,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
             }
 
             // 处理链接
-            String detailUrl = normalizedDetailBaseUrl + "/workorders/detail/" + e.getWorkOrderId();
+            String detailUrl = normalizedDetailBaseUrl + "/workorder/detail/" + e.getWorkOrderId();
             sb.append("- **处理链接**：[查看详情](").append(detailUrl).append(")\n");
             sb.append("\n");
         }

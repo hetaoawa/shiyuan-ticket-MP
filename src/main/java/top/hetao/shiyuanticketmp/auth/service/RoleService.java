@@ -6,8 +6,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.controller.dto.CreateRoleRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateRoleRequest;
+import top.hetao.shiyuanticketmp.auth.entity.SysPermission;
 import top.hetao.shiyuanticketmp.auth.entity.SysRole;
 import top.hetao.shiyuanticketmp.auth.entity.SysRolePermission;
+import top.hetao.shiyuanticketmp.auth.mapper.SysPermissionMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRolePermissionMapper;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
@@ -18,9 +20,11 @@ import java.util.List;
 public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     private final SysRolePermissionMapper rolePermissionMapper;
+    private final SysPermissionMapper permissionMapper;
 
-    public RoleService(SysRolePermissionMapper rolePermissionMapper) {
+    public RoleService(SysRolePermissionMapper rolePermissionMapper, SysPermissionMapper permissionMapper) {
         this.rolePermissionMapper = rolePermissionMapper;
+        this.permissionMapper = permissionMapper;
     }
 
     @Transactional(readOnly = true)
@@ -63,6 +67,9 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
         }
+        if (permissionIds == null) {
+            throw new WorkOrderException("权限ID列表不能为空，请使用空列表 [] 表示清空权限");
+        }
         rolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>()
                 .eq(SysRolePermission::getRoleId, roleId));
         for (Long permissionId : permissionIds) {
@@ -76,5 +83,11 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
     @Transactional(readOnly = true)
     public List<Long> getRolePermissionIds(Long roleId) {
         return rolePermissionMapper.selectPermissionIdsByRoleId(roleId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<SysPermission> listAllPermissions() {
+        return permissionMapper.selectList(
+                new LambdaQueryWrapper<SysPermission>().orderByAsc(SysPermission::getId));
     }
 }

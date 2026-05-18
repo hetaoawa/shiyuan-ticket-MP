@@ -2,16 +2,18 @@ package top.hetao.shiyuanticketmp.auth.controller;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.AssignRolesRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.CreateUserRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.ResetPasswordRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.SimpleUserDTO;
-import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateUserRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
+import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -73,8 +75,8 @@ public class UserController {
 
     @SaCheckPermission("user:update")
     @PutMapping("/{id}")
-    public Map<String, Object> update(@PathVariable Long id, @RequestBody UpdateUserRequest request) {
-        userService.updateUser(id, request);
+    public Map<String, Object> update(@PathVariable Long id, @RequestBody Map<String, Object> request) {
+        userService.updateUserFromMap(id, request);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "用户更新成功");
@@ -86,7 +88,7 @@ public class UserController {
     public Map<String, Object> delete(@PathVariable Long id) {
         SysUser user = userService.getById(id);
         if (user == null) {
-            throw new top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException("用户不存在: " + id);
+            throw new WorkOrderException("用户不存在: " + id);
         }
         userService.removeById(id);
         Map<String, Object> response = new HashMap<>();
@@ -102,7 +104,7 @@ public class UserController {
                                              @RequestParam(required = false) String newPassword) {
         String pwd = (request != null && request.getNewPassword() != null) ? request.getNewPassword() : newPassword;
         if (pwd == null || pwd.isBlank()) {
-            throw new top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException("新密码不能为空");
+            throw new WorkOrderException("新密码不能为空");
         }
         userService.resetPassword(id, pwd);
         Map<String, Object> response = new HashMap<>();
@@ -127,6 +129,38 @@ public class UserController {
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "角色分配成功");
+        return response;
+    }
+
+    /**
+     * 获取租户选项列表（从 sys_user 表中提取不重复的 tenant_id）。
+     *
+     * <p>返回格式：[{ "id": 0, "name": "系统默认" }, { "id": 100, "name": "租户100" }, ...]
+     */
+    @SaCheckPermission("user:view")
+    @GetMapping("/tenants")
+    public Map<String, Object> listTenants() {
+        List<SysUser> users = userService.list(new LambdaQueryWrapper<SysUser>()
+                .select(SysUser::getTenantId)
+                .groupBy(SysUser::getTenantId));
+        List<Map<String, Object>> options = new ArrayList<>();
+        // 始终包含系统默认租户 0
+        Map<String, Object> defaultTenant = new HashMap<>();
+        defaultTenant.put("id", 0L);
+        defaultTenant.put("name", "系统默认");
+        options.add(defaultTenant);
+        for (SysUser u : users) {
+            Long tid = u.getTenantId();
+            if (tid != null && tid != 0L) {
+                Map<String, Object> opt = new HashMap<>();
+                opt.put("id", tid);
+                opt.put("name", "租户" + tid);
+                options.add(opt);
+            }
+        }
+        Map<String, Object> response = new HashMap<>();
+        response.put("code", 200);
+        response.put("data", options);
         return response;
     }
 }

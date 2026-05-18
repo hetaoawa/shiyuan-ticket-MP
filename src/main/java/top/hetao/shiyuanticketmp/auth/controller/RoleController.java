@@ -5,6 +5,7 @@ import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.AssignPermissionsRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.CreateRoleRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateRoleRequest;
+import top.hetao.shiyuanticketmp.auth.entity.SysPermission;
 import top.hetao.shiyuanticketmp.auth.entity.SysRole;
 import top.hetao.shiyuanticketmp.auth.service.RoleService;
 
@@ -93,6 +94,16 @@ public class RoleController {
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "权限分配成功");
+        return response;
+    }
+
+    @SaCheckPermission("role:view")
+    @GetMapping("/permissions/all")
+    public Map<String, Object> listAllPermissions() {
+        List<SysPermission> permissions = roleService.listAllPermissions();
+        Map<String, Object> response = new HashMap<>();
+        response.put("code", 200);
+        response.put("data", permissions);
         return response;
     }
 }
