@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>top.hetao</groupId>
     <artifactId>shiyuan-ticket-MP</artifactId>
-    <version>1.0.4</version>
+    <version>1.0.5</version>
     <name>shiyuan-ticket-MP</name>
     <description>shiyuan-ticket-MP</description>
     <properties>
