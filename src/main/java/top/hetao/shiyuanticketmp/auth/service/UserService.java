@@ -118,6 +118,10 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
             user.setTenantId(currentTenant != null ? currentTenant : 0L);
         }
         save(user);
+        // 如果请求中包含角色 ID，分配角色
+        if (request.getRoleIds() != null && !request.getRoleIds().isEmpty()) {
+            assignRoles(user.getId(), request.getRoleIds());
+        }
         return user;
     }
 
