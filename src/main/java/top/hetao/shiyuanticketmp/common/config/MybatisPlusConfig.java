@@ -40,7 +40,8 @@ public class MybatisPlusConfig {
             "sys_user_role",
             "sys_role_permission",
             "sys_audit_log",
-            "work_order_comment"
+            "work_order_comment",
+            "express_trace"
     );
 
     /**
