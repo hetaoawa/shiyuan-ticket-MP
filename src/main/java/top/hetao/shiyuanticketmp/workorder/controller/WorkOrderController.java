@@ -85,6 +85,8 @@ public class WorkOrderController {
             }
             order.setSubmitterId(externalUser.getId());
             order.setSenderStaffId(senderStaffId);
+            // 继承外部系统用户的租户，避免 SYSTEM_ADMIN（租户 0）创建时落到错误租户
+            order.setTenantId(externalUser.getTenantId());
         } else {
             order.setSubmitterId(StpUtil.getLoginIdAsLong());
         }

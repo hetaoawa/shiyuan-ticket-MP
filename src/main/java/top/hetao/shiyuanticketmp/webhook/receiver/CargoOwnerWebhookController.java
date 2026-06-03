@@ -9,6 +9,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.ai.AiParseService;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
@@ -148,6 +149,10 @@ public class CargoOwnerWebhookController {
             order.setConversationId(conversationId);
             order.setSenderStaffId(senderStaffId);
             order.setSubmitterId(submitter.getId());
+            // Webhook 无 Sa-Token session，TenantContext 未设置，租户拦截器默认注入 0
+            // 显式继承映射系统用户的租户 ID，确保工单落到正确租户
+            order.setTenantId(submitter.getTenantId());
+            TenantContext.setTenantId(submitter.getTenantId());
 
             WorkOrder created = workOrderService.create(order);
 
