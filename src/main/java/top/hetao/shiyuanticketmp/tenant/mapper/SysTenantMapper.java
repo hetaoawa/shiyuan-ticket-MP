@@ -30,7 +30,7 @@ public interface SysTenantMapper extends BaseMapper<SysTenant> {
             WHERE id = #{tenantId} AND status = 1 AND deleted = 0
             LOCK IN SHARE MODE
             """)
-    @InterceptorIgnore(tenantLine = "true")
+    @InterceptorIgnore(tenantLine = "true", dataPermission = "false")
     SysTenant selectEnabledByIdForShare(@Param("tenantId") Long tenantId);
 
     /**
@@ -44,7 +44,7 @@ public interface SysTenantMapper extends BaseMapper<SysTenant> {
             WHERE id = #{tenantId} AND deleted = 0
             LOCK IN SHARE MODE
             """)
-    @InterceptorIgnore(tenantLine = "true")
+    @InterceptorIgnore(tenantLine = "true", dataPermission = "false")
     SysTenant selectNotDeletedByIdForShare(@Param("tenantId") Long tenantId);
 
     /**
