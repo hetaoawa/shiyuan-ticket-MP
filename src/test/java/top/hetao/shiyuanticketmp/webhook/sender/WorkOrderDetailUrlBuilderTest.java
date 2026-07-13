@@ -18,6 +18,23 @@ class WorkOrderDetailUrlBuilderTest {
     }
 
     @Test
+    void preservesExistingRawEncodingWhenAppendingEncodedTenantCode() {
+        assertEquals(
+                "https://example.test/base%20path/workorder/detail/123"
+                        + "?x=a%20b&tenantCode=tenant%20%26%20one",
+                WorkOrderDetailUrlBuilder.build(
+                        "https://example.test/base%20path?x=a%20b", 123L, "tenant & one"));
+    }
+
+    @Test
+    void removesAllTrailingPathSlashesBeforeAppendingDetailPath() {
+        assertEquals(
+                "https://example.test/base/workorder/detail/123?x=1&tenantCode=tenant-100",
+                WorkOrderDetailUrlBuilder.build(
+                        "https://example.test/base///?x=1", 123L, "tenant-100"));
+    }
+
+    @Test
     void encodesPathAndTenantCode() {
         assertEquals(
                 "https://example.test/base%20path/workorder/detail/123?tenantCode=tenant%20%26%20one",
