@@ -109,7 +109,9 @@ public class SaTokenConfig implements WebMvcConfigurer {
         }
 
         private static boolean isTenantNeutral(String uri) {
-            if ("/api/auth/me".equals(uri) || "/api/auth/switch-tenant".equals(uri)) {
+            if ("/api/auth/me".equals(uri)
+                    || "/api/auth/switch-tenant".equals(uri)
+                    || "/api/system/version".equals(uri)) {
                 return true;
             }
             if ("/api/admin/tenants".equals(uri) || "/api/admin/tenants/options".equals(uri)) {
