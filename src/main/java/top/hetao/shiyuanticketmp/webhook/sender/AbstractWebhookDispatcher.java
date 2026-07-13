@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterRecord;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
@@ -64,7 +65,12 @@ public abstract class AbstractWebhookDispatcher {
 
         try {
             byte[] body = buildRequestBody(eventId, eventType, payload);
-            doDispatchWithRetry(eventType, eventId, body);
+            if (payload instanceof WorkOrderEvent event) {
+                doDispatchWithRetry(eventType, eventId, body,
+                        event.getConversationId(), event.getSenderStaffId());
+            } else {
+                doDispatchWithRetry(eventType, eventId, body);
+            }
         } catch (Exception e) {
             log.error("[{}] payload 序列化失败，eventId={}", channelName(), eventId, e);
         }
@@ -76,7 +82,7 @@ public abstract class AbstractWebhookDispatcher {
      */
     public DispatchResult retryRaw(String eventType, String eventId, byte[] rawBody) {
         log.info("[{}][补偿] 开始重投 eventId={} type={}", channelName(), eventId, eventType);
-        return executeWithRetry(eventType, eventId, rawBody, false);
+        return executeWithRetry(eventType, eventId, rawBody, false, null, null);
     }
 
     // ----------------------------------------------------------------
@@ -97,7 +103,8 @@ public abstract class AbstractWebhookDispatcher {
                                                 Object payload) throws Exception;
 
     /** 发送单次 HTTP 请求 */
-    protected abstract HttpResponse<String> doSend(String url, byte[] body) throws Exception;
+    protected abstract HttpResponse<String> doSend(String url, byte[] body,
+                                                   String eventId) throws Exception;
 
     /** 判断响应是否表示成功 */
     protected abstract boolean isSuccess(HttpResponse<String> response);
@@ -107,11 +114,17 @@ public abstract class AbstractWebhookDispatcher {
     // ----------------------------------------------------------------
 
     protected void doDispatchWithRetry(String eventType, String eventId, byte[] body) {
-        executeWithRetry(eventType, eventId, body, true);
+        doDispatchWithRetry(eventType, eventId, body, null, null);
+    }
+
+    protected void doDispatchWithRetry(String eventType, String eventId, byte[] body,
+                                       String conversationId, String senderStaffId) {
+        executeWithRetry(eventType, eventId, body, true, conversationId, senderStaffId);
     }
 
     private DispatchResult executeWithRetry(String eventType, String eventId, byte[] body,
-                                            boolean persistOnFailure) {
+                                             boolean persistOnFailure,
+                                             String conversationId, String senderStaffId) {
         int attempt = 0;
         String lastError = "未知错误";
         String url = channelName() + ":configuration-error";
@@ -124,7 +137,7 @@ public abstract class AbstractWebhookDispatcher {
                 // URL and credential validation are deliberately lazy and happen inside the
                 // retry boundary so a disabled/unused channel never blocks application startup.
                 url = buildRequestUrl();
-                HttpResponse<String> response = doSend(url, body);
+                HttpResponse<String> response = doSend(url, body, eventId);
                 lastStatusCode = response.statusCode();
 
                 if (isSuccess(response)) {
@@ -161,7 +174,8 @@ public abstract class AbstractWebhookDispatcher {
         }
 
         if (persistOnFailure) {
-            persistDeadLetter(eventId, eventType, url, body, lastError, attempt);
+            persistDeadLetter(eventId, eventType, url, body, lastError, attempt,
+                    conversationId, senderStaffId);
         }
         return DispatchResult.failed(lastStatusCode, lastError);
     }
@@ -178,13 +192,16 @@ public abstract class AbstractWebhookDispatcher {
 
     protected void persistDeadLetter(String eventId, String eventType,
                                       String targetUrl, byte[] body,
-                                      String lastError, int attempts) {
+                                      String lastError, int attempts,
+                                      String conversationId, String senderStaffId) {
         try {
             String payloadStr = new String(body, StandardCharsets.UTF_8);
             WebhookDeadLetterRecord record = WebhookDeadLetterRecord.of(
                     eventId, eventType, targetUrl, payloadStr, lastError, attempts);
             record.setTenantId(TenantContext.requireTenantId());
             record.setChannel(channelCode());
+            record.setConversationId(conversationId);
+            record.setSenderStaffId(senderStaffId);
             deadLetterService.save(record);
         } catch (Exception e) {
             log.error("[{}][死信] 落库异常！eventId={}", channelName(), eventId, e);

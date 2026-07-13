@@ -83,12 +83,13 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     }
 
     @Override
-    protected HttpResponse<String> doSend(String url, byte[] body) throws Exception {
+    protected HttpResponse<String> doSend(String url, byte[] body, String eventId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json; charset=UTF-8")
                 .header("Authorization", authorization)
+                .header("X-Event-Id", eventId)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -115,8 +116,8 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     /**
      * 批量投递：将多条事件合并为一条纯文本消息。
      *
-     * <p>取第一条事件的 conversationId/senderStaffId 作为 room_id/senderStaffId。
-     * 若同一批次涉及多个群，以第一条为准（实际场景中同一群的消息通常在同一窗口内）。
+     * <p>取该批次稳定的 conversationId/senderStaffId 作为 room_id/senderStaffId。
+     * 聚合器按租户、群和接收人隔离批次，因此这里不会混合不同外部接收目标。
      */
     public void dispatchBatch(List<WorkOrderEvent> events) {
         if (events == null || events.isEmpty()) return;
@@ -125,26 +126,29 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
         log.info("[CargoOwner] 批量投递 eventId={} 条数={}", eventId, events.size());
 
         try {
-            String message = formatBatchText(events);
-
-            // 从事件中取群ID和发送人ID
-            String roomId = null;
-            String staffId = null;
-            for (WorkOrderEvent e : events) {
-                if (roomId == null && e.getConversationId() != null) {
-                    roomId = e.getConversationId();
-                }
-                if (staffId == null && e.getSenderStaffId() != null) {
-                    staffId = e.getSenderStaffId();
-                }
-                if (roomId != null && staffId != null) break;
-            }
-
-            byte[] body = objectMapper.writeValueAsBytes(buildMessageBody(message, roomId, staffId));
-            doDispatchWithRetry("BATCH", eventId, body);
+            String roomId = firstConversationId(events);
+            String staffId = firstSenderStaffId(events);
+            byte[] body = prepareBatchBody(events);
+            doDispatchWithRetry("BATCH", eventId, body, roomId, staffId);
         } catch (Exception e) {
             log.error("[CargoOwner] 批量消息序列化失败 eventId={}", eventId, e);
         }
+    }
+
+    /** Builds the exact immutable HTTP body used by the aggregate dispatcher and dead-letter fallback. */
+    byte[] prepareBatchBody(List<WorkOrderEvent> events) throws Exception {
+        return objectMapper.writeValueAsBytes(buildMessageBody(
+                formatBatchText(events), firstConversationId(events), firstSenderStaffId(events)));
+    }
+
+    private String firstConversationId(List<WorkOrderEvent> events) {
+        return events.stream().map(WorkOrderEvent::getConversationId)
+                .filter(value -> value != null && !value.isBlank()).findFirst().orElse(null);
+    }
+
+    private String firstSenderStaffId(List<WorkOrderEvent> events) {
+        return events.stream().map(WorkOrderEvent::getSenderStaffId)
+                .filter(value -> value != null && !value.isBlank()).findFirst().orElse(null);
     }
 
     // ----------------------------------------------------------------

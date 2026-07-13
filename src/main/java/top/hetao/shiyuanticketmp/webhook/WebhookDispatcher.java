@@ -105,13 +105,15 @@ public class WebhookDispatcher {
     public void dispatch(String targetUrl, String eventType, Object payload) {
         // ① 入口唯一生成 eventId，全程传递不再重新生成
         String eventId = UUID.randomUUID().toString();
-        log.info("[WebHook] 开始投递 eventId={} type={} url={}", eventId, eventType, targetUrl);
+        // 目标 URL 可能携带访问令牌或签名参数，日志只保留事件标识。
+        log.info("[WebHook] 开始投递 eventId={} type={}", eventId, eventType);
 
         try {
             // ② 用信封包裹 payload，eventId 同时注入 Header（由 sendRequest 写入）和 Body
             WebhookEnvelope envelope = WebhookEnvelope.wrap(eventId, eventType, payload);
             byte[] body = objectMapper.writeValueAsBytes(envelope);
-            doDispatchWithRetry(targetUrl, eventType, eventId, body);
+            doDispatchWithRetry(targetUrl, eventType, eventId, body,
+                    Long.toString(envelope.getTimestamp()));
         } catch (Exception e) {
             // 序列化失败属于编程错误，不写死信（重投也会失败）
             log.error("[WebHook] payload 序列化失败，eventId={}", eventId, e);
@@ -139,7 +141,8 @@ public class WebhookDispatcher {
                             String eventId, byte[] rawBody, Long tenantId) {
         log.info("[WebHook][补偿] 开始重投 eventId={} type={}", eventId, eventType);
         try (TenantContext.Scope ignored = TenantContext.useTenant(tenantId)) {
-            doDispatchWithRetry(targetUrl, eventType, eventId, rawBody);
+            doDispatchWithRetry(targetUrl, eventType, eventId, rawBody,
+                    extractEnvelopeTimestamp(rawBody));
         }
     }
 
@@ -165,14 +168,15 @@ public class WebhookDispatcher {
      * @param body      已序列化的 JSON 请求体字节数组
      */
     private void doDispatchWithRetry(String targetUrl, String eventType,
-                                     String eventId, byte[] body) {
+                                     String eventId, byte[] body, String timestamp) {
         int    attempt   = 0;
         String lastError = "未知错误";
 
         while (attempt <= maxRetry) {
             attempt++;
             try {
-                HttpResponse<String> response = sendRequest(targetUrl, eventType, eventId, body);
+                HttpResponse<String> response = sendRequest(
+                        targetUrl, eventType, eventId, timestamp, body);
 
                 if (isSuccess(response.statusCode())) {
                     log.info("[WebHook] 投递成功 eventId={} attempt={} status={}",
@@ -223,8 +227,8 @@ public class WebhookDispatcher {
      * 接收方用相同 body 重新计算 HMAC-SHA256 后与 {@code X-Signature} 对比即可验证来源。
      */
     private HttpResponse<String> sendRequest(String targetUrl, String eventType,
-                                             String eventId, byte[] body) throws Exception {
-        String timestamp = String.valueOf(System.currentTimeMillis() / 1000L);
+                                             String eventId, String timestamp,
+                                             byte[] body) throws Exception {
         // 签名基于完整 body，确保 payload 不可篡改
         String signature = HMACUtils.sign(body, sharedSecret);
 
@@ -240,6 +244,18 @@ public class WebhookDispatcher {
                 .build();
 
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+    }
+
+    private String extractEnvelopeTimestamp(byte[] body) {
+        try {
+            var timestamp = objectMapper.readTree(body).get("timestamp");
+            if (timestamp != null && timestamp.isIntegralNumber() && timestamp.canConvertToLong()) {
+                return Long.toString(timestamp.longValue());
+            }
+        } catch (Exception e) {
+            log.warn("[WebHook][补偿] 无法从原始信封读取时间戳", e);
+        }
+        return Long.toString(System.currentTimeMillis() / 1000L);
     }
 
     // ----------------------------------------------------------------

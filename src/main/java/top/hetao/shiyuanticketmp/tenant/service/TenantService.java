@@ -21,10 +21,14 @@ public class TenantService {
 
     private final SysTenantMapper tenantMapper;
     private final RoleProvisioningService roleProvisioningService;
+    private final TenantMenuProvisioningService menuProvisioningService;
 
-    public TenantService(SysTenantMapper tenantMapper, RoleProvisioningService roleProvisioningService) {
+    public TenantService(SysTenantMapper tenantMapper,
+                         RoleProvisioningService roleProvisioningService,
+                         TenantMenuProvisioningService menuProvisioningService) {
         this.tenantMapper = tenantMapper;
         this.roleProvisioningService = roleProvisioningService;
+        this.menuProvisioningService = menuProvisioningService;
     }
 
     @Transactional(readOnly = true)
@@ -69,9 +73,19 @@ public class TenantService {
         SysTenant tenant = new SysTenant();
         tenant.setTenantCode(validated.code());
         tenant.setTenantName(validated.name());
-        tenant.setStatus(validated.status());
+        // Provisioners use the normal enabled-tenant lifecycle gate. Insert enabled first so the
+        // same transaction can initialize structure without a privileged bypass, then apply the
+        // requested disabled state only after provisioning is complete.
+        tenant.setStatus(1);
         tenantMapper.insert(tenant);
         roleProvisioningService.provisionTenantRoles(tenant.getId());
+        menuProvisioningService.provisionTenantMenus(tenant.getId());
+        if (validated.status() == 0) {
+            tenant.setStatus(0);
+            if (tenantMapper.updateById(tenant) != 1) {
+                throw new WorkOrderException("租户初始化后停用失败: " + tenant.getId());
+            }
+        }
         return tenant;
     }
 
@@ -80,7 +94,7 @@ public class TenantService {
         if (tenantId == null || tenantId < 0) {
             throw new WorkOrderException("租户 ID 非法");
         }
-        SysTenant tenant = tenantMapper.selectById(tenantId);
+        SysTenant tenant = tenantMapper.selectByIdForUpdate(tenantId);
         if (tenant == null) {
             throw new WorkOrderException("租户不存在: " + tenantId);
         }
@@ -95,7 +109,9 @@ public class TenantService {
         }
         tenant.setTenantName(validated.name());
         tenant.setStatus(validated.status());
-        tenantMapper.updateById(tenant);
+        if (tenantMapper.updateById(tenant) != 1) {
+            throw new WorkOrderException("租户已被并发修改或删除: " + tenantId);
+        }
         return tenant;
     }
 
@@ -104,19 +120,30 @@ public class TenantService {
         if (tenantId == null || tenantId <= 0) {
             throw new WorkOrderException("平台租户不可删除");
         }
-        if (tenantMapper.selectById(tenantId) == null) {
-            throw new WorkOrderException("租户不存在: " + tenantId);
+        if (tenantId.equals(TenantContext.getTenantId())) {
+            throw new WorkOrderException("当前活动租户不可删除，请先切换至其他租户");
         }
-        long referenceCount;
-        // 引用统计跨越所有租户表，需要最小范围内部旁路；SQL 中的表名固定且 ID 参数化。
         try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
-            referenceCount = tenantMapper.countReferences(tenantId);
+            SysTenant tenant = tenantMapper.selectByIdForUpdate(tenantId);
+            if (tenant == null) {
+                throw new WorkOrderException("租户不存在: " + tenantId);
+            }
+            if (!Integer.valueOf(0).equals(tenant.getStatus())) {
+                throw new WorkOrderException("请先停用租户，再执行删除");
+            }
+            if (tenantMapper.countBusinessReferences(tenantId) > 0) {
+                throw new WorkOrderException("租户仍有关联业务数据，请停用租户而不是删除");
+            }
+            tenantMapper.deleteTenantUserRoleRelations(tenantId);
+            tenantMapper.deleteTenantRolePermissionRelations(tenantId);
+            tenantMapper.deleteTenantRoles(tenantId);
+            tenantMapper.deleteTenantMenus(tenantId);
+            tenantMapper.deleteTenantSettings(tenantId);
+            // Logical deletion intentionally retains tenant_code uniqueness.
+            if (tenantMapper.deleteById(tenantId) != 1) {
+                throw new WorkOrderException("租户已被并发修改或删除: " + tenantId);
+            }
         }
-        if (referenceCount > 0) {
-            throw new WorkOrderException("租户仍有关联业务数据，请停用租户而不是删除");
-        }
-        // 逻辑删除后仍保留唯一 tenant_code；编码是永久稳定标识，不允许回收复用。
-        tenantMapper.deleteById(tenantId);
     }
 
     private ValidatedTenant validate(TenantRequest request) {

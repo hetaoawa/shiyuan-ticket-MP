@@ -8,6 +8,8 @@ import top.hetao.shiyuanticketmp.menu.controller.dto.CreateMenuRequest;
 import top.hetao.shiyuanticketmp.menu.controller.dto.UpdateMenuRequest;
 import top.hetao.shiyuanticketmp.menu.entity.SysMenu;
 import top.hetao.shiyuanticketmp.menu.mapper.SysMenuMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.*;
@@ -15,6 +17,12 @@ import java.util.stream.Collectors;
 
 @Service
 public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
+
+    private final TenantLifecycleGuard tenantLifecycleGuard;
+
+    public MenuService(TenantLifecycleGuard tenantLifecycleGuard) {
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
+    }
 
     public List<Map<String, Object>> getMenuTree(List<String> userPermissions) {
         List<SysMenu> allMenus = list(new LambdaQueryWrapper<SysMenu>()
@@ -39,6 +47,7 @@ public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
 
     @Transactional
     public SysMenu createMenu(CreateMenuRequest request) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         if (request.getMenuCode() != null && !request.getMenuCode().isBlank()) {
             long count = count(new LambdaQueryWrapper<SysMenu>()
                     .eq(SysMenu::getMenuCode, request.getMenuCode()));
@@ -62,6 +71,7 @@ public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
 
     @Transactional
     public void updateMenu(Long menuId, UpdateMenuRequest request) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysMenu menu = getById(menuId);
         if (menu == null) {
             throw new WorkOrderException("菜单不存在: " + menuId);
@@ -80,6 +90,7 @@ public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
 
     @Transactional
     public void deleteMenu(Long menuId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysMenu menu = getById(menuId);
         if (menu == null) {
             throw new WorkOrderException("菜单不存在: " + menuId);

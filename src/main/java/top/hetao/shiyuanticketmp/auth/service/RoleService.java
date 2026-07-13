@@ -12,6 +12,8 @@ import top.hetao.shiyuanticketmp.auth.entity.SysRolePermission;
 import top.hetao.shiyuanticketmp.auth.mapper.SysPermissionMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRolePermissionMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.List;
@@ -21,10 +23,14 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     private final SysRolePermissionMapper rolePermissionMapper;
     private final SysPermissionMapper permissionMapper;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
-    public RoleService(SysRolePermissionMapper rolePermissionMapper, SysPermissionMapper permissionMapper) {
+    public RoleService(SysRolePermissionMapper rolePermissionMapper,
+                       SysPermissionMapper permissionMapper,
+                       TenantLifecycleGuard tenantLifecycleGuard) {
         this.rolePermissionMapper = rolePermissionMapper;
         this.permissionMapper = permissionMapper;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     @Transactional(readOnly = true)
@@ -34,6 +40,7 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public SysRole createRole(CreateRoleRequest request) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         if (request.getRoleCode() == null || request.getRoleCode().isBlank()) {
             throw new WorkOrderException("角色编码不能为空");
         }
@@ -54,6 +61,7 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public void updateRole(Long roleId, UpdateRoleRequest request) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysRole role = getById(roleId);
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
@@ -67,6 +75,7 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public void assignPermissions(Long roleId, List<Long> permissionIds) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysRole role = getById(roleId);
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
@@ -104,6 +113,7 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public void deleteRole(Long roleId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysRole role = getById(roleId);
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);

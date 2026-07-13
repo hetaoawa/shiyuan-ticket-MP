@@ -1,6 +1,5 @@
 package top.hetao.shiyuanticketmp.auth.controller;
 
-import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.*;
@@ -40,7 +39,7 @@ public class UserController {
         return response;
     }
 
-    @SaCheckLogin
+    @SaCheckPermission("user:view")
     @GetMapping("/simple")
     public Map<String, Object> listSimple() {
         List<SimpleUserDTO> users = userService.listSimpleUsers();
@@ -84,11 +83,7 @@ public class UserController {
     @SaCheckPermission("user:delete")
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable Long id) {
-        SysUser user = userService.getById(id);
-        if (user == null) {
-            throw new WorkOrderException("用户不存在: " + id);
-        }
-        userService.removeById(id);
+        userService.deleteUser(id);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "用户删除成功");

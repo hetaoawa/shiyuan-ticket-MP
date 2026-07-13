@@ -38,6 +38,12 @@ public class WebhookDeadLetterRecord extends BaseEntity {
     /** 原始目标 URL */
     private String targetUrl;
 
+    /** Cargo-owner conversation/room target captured at the original attempt. */
+    private String conversationId;
+
+    /** Cargo-owner recipient identity captured at the original attempt. */
+    private String senderStaffId;
+
     /**
      * 原始请求体 JSON（TEXT 类型存储）。
      * 管理员可直接查看内容确认是否需要补偿，补偿时直接重投此字段内容。

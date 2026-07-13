@@ -1,5 +1,7 @@
 package top.hetao.shiyuanticketmp.webhook.receiver;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,7 +10,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.util.HMACUtils;
 
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
@@ -43,9 +44,12 @@ public class WebhookReceiverController {
     private String sharedSecret;
 
     private final WebhookEventQueueService queueService;
+    private final ObjectMapper objectMapper;
 
-    public WebhookReceiverController(WebhookEventQueueService queueService) {
+    public WebhookReceiverController(WebhookEventQueueService queueService,
+                                     ObjectMapper objectMapper) {
         this.queueService = queueService;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -63,7 +67,7 @@ public class WebhookReceiverController {
         String eventType = request.getHeader(HEADER_EVENT_TYPE);
 
         // 2. 校验必要 Header
-        if (signature == null || timestamp == null || eventId == null) {
+        if (isBlank(signature) || isBlank(timestamp) || isBlank(eventId) || isBlank(eventType)) {
             log.warn("[WebHook接收] 缺少必要 Header");
             return ResponseEntity.badRequest().body(Map.of(
                     "code", 400,
@@ -71,27 +75,7 @@ public class WebhookReceiverController {
             ));
         }
 
-        // 3. 验证时间戳（防重放攻击）
-        try {
-            long requestTime = Long.parseLong(timestamp);
-            long currentTime = System.currentTimeMillis() / 1000L;
-            if (Math.abs(currentTime - requestTime) > TIMESTAMP_TOLERANCE_SECONDS) {
-                log.warn("[WebHook接收] 时间戳过期 eventId={} diff={}s", eventId,
-                        Math.abs(currentTime - requestTime));
-                return ResponseEntity.badRequest().body(Map.of(
-                        "code", 400,
-                        "message", "请求时间戳超出允许范围"
-                ));
-            }
-        } catch (NumberFormatException e) {
-            log.warn("[WebHook接收] 时间戳格式错误 eventId={}", eventId);
-            return ResponseEntity.badRequest().body(Map.of(
-                    "code", 400,
-                    "message", "时间戳格式错误"
-            ));
-        }
-
-        // 4. 验证 HMAC-SHA256 签名
+        // 3. 先验证签名，再解析或暴露信封校验细节，避免形成格式探测 oracle。
         byte[] bodyBytes = body.getBytes(StandardCharsets.UTF_8);
         String expectedSignature = HMACUtils.sign(bodyBytes, sharedSecret);
         if (!HMACUtils.safeEquals(signature, expectedSignature)) {
@@ -102,8 +86,65 @@ public class WebhookReceiverController {
             ));
         }
 
-        // 5. 入队（快速返回）
-        queueService.push(eventId, eventType, timestamp, body);
+        // 4. 路由和防重放元数据必须来自已签名信封，并与 Header 严格一致。
+        JsonNode envelope;
+        try {
+            envelope = objectMapper.readTree(body);
+        } catch (Exception e) {
+            return badEnvelope();
+        }
+        String bodyEventId = requiredText(envelope, "eventId");
+        String bodyEventType = requiredText(envelope, "eventType");
+        JsonNode bodyTimestampNode = envelope == null ? null : envelope.get("timestamp");
+        if (bodyEventId == null || bodyEventType == null || bodyTimestampNode == null
+                || !bodyTimestampNode.isIntegralNumber() || !bodyTimestampNode.canConvertToLong()) {
+            return badEnvelope();
+        }
+
+        long headerTimestamp;
+        long bodyTimestamp = bodyTimestampNode.longValue();
+        try {
+            headerTimestamp = Long.parseLong(timestamp);
+        } catch (NumberFormatException e) {
+            return badEnvelope();
+        }
+        if (!eventId.equals(bodyEventId) || !eventType.equals(bodyEventType)
+                || headerTimestamp != bodyTimestamp) {
+            log.warn("[WebHook接收] Header/Body 元数据不一致 eventId={}", eventId);
+            return badEnvelope();
+        }
+
+        long currentTime = System.currentTimeMillis() / 1000L;
+        if (bodyTimestamp < currentTime - TIMESTAMP_TOLERANCE_SECONDS
+                || bodyTimestamp > currentTime + TIMESTAMP_TOLERANCE_SECONDS) {
+            log.warn("[WebHook接收] 已签名 Body 时间戳过期 eventId={}", eventId);
+            return ResponseEntity.badRequest().body(Map.of(
+                    "code", 400,
+                    "message", "请求时间戳超出允许范围"
+            ));
+        }
+
+        // 5. 原子预留 eventId；重复请求幂等返回 200，但不会重复写入 Stream。
+        String reservationToken = queueService.reserveEvent(eventId);
+        if (reservationToken == null) {
+            log.info("[WebHook接收] 重复事件已忽略 eventId={}", eventId);
+            return ResponseEntity.ok(Map.of(
+                    "code", 200,
+                    "message", "事件已接收",
+                    "eventId", eventId
+            ));
+        }
+        try {
+            queueService.push(eventId, eventType, timestamp, body);
+        } catch (RuntimeException | Error pushFailure) {
+            try {
+                queueService.releaseEventReservation(eventId, reservationToken);
+            } catch (RuntimeException releaseFailure) {
+                pushFailure.addSuppressed(releaseFailure);
+                log.error("[WebHook接收] 释放事件预留失败 eventId={}", eventId, releaseFailure);
+            }
+            throw pushFailure;
+        }
         log.info("[WebHook接收] 事件已入队 eventId={} eventType={}", eventId, eventType);
 
         return ResponseEntity.ok(Map.of(
@@ -111,5 +152,27 @@ public class WebhookReceiverController {
                 "message", "事件已接收",
                 "eventId", eventId
         ));
+    }
+
+    private ResponseEntity<Map<String, Object>> badEnvelope() {
+        return ResponseEntity.badRequest().body(Map.of(
+                "code", 400,
+                "message", "WebHook 事件信封无效"
+        ));
+    }
+
+    private static String requiredText(JsonNode envelope, String field) {
+        if (envelope == null || !envelope.isObject()) {
+            return null;
+        }
+        JsonNode value = envelope.get(field);
+        if (value == null || !value.isTextual() || value.textValue().isBlank()) {
+            return null;
+        }
+        return value.textValue();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 }

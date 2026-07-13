@@ -9,6 +9,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.mapper.WorkOrderCommentMapper;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.CommentVO;
@@ -29,13 +31,16 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
     private final SysUserMapper sysUserMapper;
     private final ApplicationEventPublisher eventPublisher;
     private final WorkOrderService workOrderService;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     public WorkOrderCommentService(SysUserMapper sysUserMapper,
                                    ApplicationEventPublisher eventPublisher,
-                                   WorkOrderService workOrderService) {
+                                   WorkOrderService workOrderService,
+                                   TenantLifecycleGuard tenantLifecycleGuard) {
         this.sysUserMapper = sysUserMapper;
         this.eventPublisher = eventPublisher;
         this.workOrderService = workOrderService;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     /**
@@ -56,6 +61,7 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
             throw new WorkOrderException("评论内容不能为空");
         }
 
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder workOrder = workOrderService.getByIdWithAccessCheck(
                 workOrderId, commenterId, commenterRoles);
         WorkOrderComment comment = new WorkOrderComment();
@@ -68,7 +74,8 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
         save(comment);
 
         // 发布评论事件（用于 WebHook 推送）
-        eventPublisher.publishEvent(new WorkOrderCommentEvent(this, workOrder, comment));
+        eventPublisher.publishEvent(new WorkOrderCommentEvent(
+                this, workOrder.getTenantId(), workOrder, comment));
 
         return comment;
     }

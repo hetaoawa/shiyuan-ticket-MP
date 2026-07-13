@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.webhook.deadletter.enums.DeadLetterStatus;
 import top.hetao.shiyuanticketmp.webhook.sender.CargoOwnerDispatcher;
 import top.hetao.shiyuanticketmp.webhook.sender.DingTalkDispatcher;
@@ -35,16 +36,19 @@ public class WebhookDeadLetterService {
     private static final Logger log = LoggerFactory.getLogger(WebhookDeadLetterService.class);
 
     private final WebhookDeadLetterMapper mapper;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     private final ObjectProvider<DingTalkDispatcher> dingTalkDispatcherProvider;
     private final ObjectProvider<CargoOwnerDispatcher> cargoOwnerDispatcherProvider;
 
     public WebhookDeadLetterService(WebhookDeadLetterMapper mapper,
                                     ObjectProvider<DingTalkDispatcher> dingTalkDispatcherProvider,
-                                    ObjectProvider<CargoOwnerDispatcher> cargoOwnerDispatcherProvider) {
+                                    ObjectProvider<CargoOwnerDispatcher> cargoOwnerDispatcherProvider,
+                                    TenantLifecycleGuard tenantLifecycleGuard) {
         this.mapper = mapper;
         this.dingTalkDispatcherProvider = dingTalkDispatcherProvider;
         this.cargoOwnerDispatcherProvider = cargoOwnerDispatcherProvider;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     // ----------------------------------------------------------------
@@ -61,7 +65,15 @@ public class WebhookDeadLetterService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void save(WebhookDeadLetterRecord record) {
-        mapper.insert(record);
+        if (record == null || record.getTenantId() == null) {
+            throw new IllegalArgumentException("Dead-letter tenant id is required");
+        }
+        try (TenantContext.Scope ignored = TenantContext.useTenant(record.getTenantId())) {
+            tenantLifecycleGuard.lockTenantForDerivedWrite(record.getTenantId());
+            if (mapper.insert(record) != 1) {
+                throw new IllegalStateException("Dead-letter insert affected an unexpected row count");
+            }
+        }
         log.warn("[死信] 已落库 eventId={} eventType={} attempts={}",
                 record.getEventId(), record.getEventType(), record.getAttempts());
     }
@@ -115,6 +127,7 @@ public class WebhookDeadLetterService {
      */
     @Transactional
     public void retry(Long deadLetterId, String operator) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WebhookDeadLetterRecord record = mapper.selectByIdForUpdate(deadLetterId);
         if (record == null) {
             throw new IllegalArgumentException("死信记录不存在: " + deadLetterId);
@@ -165,9 +178,13 @@ public class WebhookDeadLetterService {
      */
     @Transactional
     public void ignore(Long deadLetterId, String operator) {
-        WebhookDeadLetterRecord record = mapper.selectById(deadLetterId);
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        WebhookDeadLetterRecord record = mapper.selectByIdForUpdate(deadLetterId);
         if (record == null) {
             throw new IllegalArgumentException("死信记录不存在: " + deadLetterId);
+        }
+        if (record.getStatus() != DeadLetterStatus.PENDING) {
+            throw new IllegalStateException("Dead letter has already been handled: " + record.getStatus());
         }
         record.markIgnored(operator);
         mapper.updateById(record);

@@ -78,11 +78,12 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
     }
 
     @Override
-    protected HttpResponse<String> doSend(String url, byte[] body) throws Exception {
+    protected HttpResponse<String> doSend(String url, byte[] body, String eventId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json; charset=UTF-8")
+                .header("X-Event-Id", eventId)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -116,16 +117,21 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
         log.info("[DingTalk] 批量投递 eventId={} 条数={}", eventId, events.size());
 
         try {
-            String markdown = formatBatchMarkdown(events);
-            Map<String, Object> body = Map.of(
-                    "msgtype", "markdown",
-                    "markdown", Map.of("title", "工单通知", "text", markdown)
-            );
-            byte[] bodyBytes = objectMapper.writeValueAsBytes(body);
+            byte[] bodyBytes = prepareBatchBody(events);
             doDispatchWithRetry("BATCH", eventId, bodyBytes);
         } catch (Exception e) {
             log.error("[DingTalk] 批量消息序列化失败 eventId={}", eventId, e);
         }
+    }
+
+    /** Builds the exact immutable HTTP body used by the aggregate dispatcher and dead-letter fallback. */
+    byte[] prepareBatchBody(List<WorkOrderEvent> events) throws Exception {
+        String markdown = formatBatchMarkdown(events);
+        Map<String, Object> body = Map.of(
+                "msgtype", "markdown",
+                "markdown", Map.of("title", "工单通知", "text", markdown)
+        );
+        return objectMapper.writeValueAsBytes(body);
     }
 
     // ----------------------------------------------------------------

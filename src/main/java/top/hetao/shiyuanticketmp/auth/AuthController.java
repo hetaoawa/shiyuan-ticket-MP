@@ -2,7 +2,6 @@ package top.hetao.shiyuanticketmp.auth;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.ChangePasswordRequest;
@@ -153,7 +152,7 @@ public class AuthController {
             throw new WorkOrderException("旧密码不正确");
         }
 
-        userService.resetPassword(userId, request.getNewPassword());
+        userService.resetPrincipalPassword(userId, request.getNewPassword());
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -176,27 +175,7 @@ public class AuthController {
             throw new WorkOrderException("用户不存在");
         }
 
-        boolean hasUpdate = false;
-        LambdaUpdateWrapper<SysUser> wrapper = new LambdaUpdateWrapper<>();
-        wrapper.eq(SysUser::getId, userId);
-
-        if (body.containsKey("nickname") && body.get("nickname") != null) {
-            wrapper.set(SysUser::getNickname, body.get("nickname"));
-            hasUpdate = true;
-        }
-        if (body.containsKey("phone")) {
-            String phone = body.get("phone");
-            wrapper.set(SysUser::getPhone, (phone == null || phone.isBlank()) ? null : phone);
-            hasUpdate = true;
-        }
-        if (body.containsKey("email")) {
-            String email = body.get("email");
-            wrapper.set(SysUser::getEmail, (email == null || email.isBlank()) ? null : email);
-            hasUpdate = true;
-        }
-        if (hasUpdate) {
-            userService.update(wrapper);
-        }
+        userService.updatePrincipalProfile(userId, body);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);

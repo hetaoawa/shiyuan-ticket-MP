@@ -12,13 +12,23 @@ import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
  */
 public class WorkOrderCommentEvent extends ApplicationEvent {
 
+    private final Long tenantId;
     private final WorkOrder workOrder;
     private final WorkOrderComment comment;
 
-    public WorkOrderCommentEvent(Object source, WorkOrder workOrder, WorkOrderComment comment) {
+    public WorkOrderCommentEvent(Object source, Long tenantId,
+                                 WorkOrder workOrder, WorkOrderComment comment) {
         super(source);
+        if (tenantId == null) {
+            throw new IllegalArgumentException("tenantId is required for work-order comment events");
+        }
+        this.tenantId = tenantId;
         this.workOrder = workOrder;
         this.comment = comment;
+    }
+
+    public Long getTenantId() {
+        return tenantId;
     }
 
     public WorkOrder getWorkOrder() {

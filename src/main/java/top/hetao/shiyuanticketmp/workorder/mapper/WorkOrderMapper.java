@@ -6,6 +6,7 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
+import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -130,4 +131,54 @@ public interface WorkOrderMapper extends BaseMapper<WorkOrder> {
             @Param("workOrderId") Long workOrderId,
             @Param("tenantId") Long tenantId,
             @Param("assignedAt") LocalDateTime assignedAt);
+
+    @Update("""
+            UPDATE work_order
+            SET status = 'CLOSED', resolution = #{resolution}, closed_at = #{closedAt},
+                updated_at = #{closedAt}
+            WHERE id = #{workOrderId} AND status = 'IN_PROGRESS' AND deleted = 0
+            """)
+    int closeInProgress(@Param("workOrderId") Long workOrderId,
+                        @Param("resolution") String resolution,
+                        @Param("closedAt") LocalDateTime closedAt);
+
+    @Update("""
+            UPDATE work_order
+            SET status = 'REJECTED', rejection_reason = #{reason}, closed_at = #{closedAt},
+                assignee_id = NULL, assignee_role = NULL, assigned_at = NULL,
+                updated_at = #{closedAt}
+            WHERE id = #{workOrderId} AND status = 'IN_PROGRESS' AND deleted = 0
+            """)
+    int rejectInProgress(@Param("workOrderId") Long workOrderId,
+                         @Param("reason") String reason,
+                         @Param("closedAt") LocalDateTime closedAt);
+
+    @Update("""
+            UPDATE work_order
+            SET status = 'PENDING', rejection_reason = NULL, closed_at = NULL,
+                assignee_id = NULL, assignee_role = NULL, assigned_at = NULL,
+                title = #{title}, description = #{description}, tracking_no = #{trackingNo},
+                target_address = #{targetAddress}, priority = #{priority}, type = #{type},
+                updated_at = #{updatedAt}
+            WHERE id = #{workOrderId} AND status = 'REJECTED' AND deleted = 0
+            """)
+    int resubmitRejected(@Param("workOrderId") Long workOrderId,
+                         @Param("title") String title,
+                         @Param("description") String description,
+                         @Param("trackingNo") String trackingNo,
+                         @Param("targetAddress") String targetAddress,
+                         @Param("priority") Integer priority,
+                         @Param("type") WorkOrderType type,
+                         @Param("updatedAt") LocalDateTime updatedAt);
+
+    @Update("""
+            UPDATE work_order
+            SET status = 'REJECTED', rejection_reason = #{reason}, closed_at = #{closedAt},
+                assignee_id = NULL, assignee_role = NULL, assigned_at = NULL,
+                updated_at = #{closedAt}
+            WHERE id = #{workOrderId} AND status IN ('PENDING', 'IN_PROGRESS') AND deleted = 0
+            """)
+    int forceRejectActive(@Param("workOrderId") Long workOrderId,
+                          @Param("reason") String reason,
+                          @Param("closedAt") LocalDateTime closedAt);
 }

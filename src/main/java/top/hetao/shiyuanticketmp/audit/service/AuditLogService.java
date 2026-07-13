@@ -5,8 +5,11 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.audit.entity.SysAuditLog;
 import top.hetao.shiyuanticketmp.audit.mapper.SysAuditLogMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 
 import java.time.LocalDateTime;
 
@@ -15,6 +18,26 @@ import java.time.LocalDateTime;
  */
 @Service
 public class AuditLogService extends ServiceImpl<SysAuditLogMapper, SysAuditLog> {
+
+    private final TenantLifecycleGuard tenantLifecycleGuard;
+
+    public AuditLogService(TenantLifecycleGuard tenantLifecycleGuard) {
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
+    }
+
+    /** Persists one asynchronous audit row behind the tenant lifecycle lock. */
+    @Transactional
+    public void saveForTenant(SysAuditLog auditLog) {
+        if (auditLog == null || auditLog.getTenantId() == null) {
+            throw new IllegalArgumentException("Audit log tenant id is required");
+        }
+        try (TenantContext.Scope ignored = TenantContext.useTenant(auditLog.getTenantId())) {
+            tenantLifecycleGuard.lockTenantForDerivedWrite(auditLog.getTenantId());
+            if (baseMapper.insert(auditLog) != 1) {
+                throw new IllegalStateException("Audit log insert affected an unexpected row count");
+            }
+        }
+    }
 
     /**
      * 分页查询审计日志。

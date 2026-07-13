@@ -121,6 +121,7 @@ public class WorkOrderController {
      * <p>支持按状态筛选、按物流单号模糊搜索，带可见性过滤。
      */
     @GetMapping
+    @SaCheckPermission("workorder:view")
     public Map<String, Object> list(@RequestParam(defaultValue = "1") int page,
                                      @RequestParam(defaultValue = "10") int pageSize,
                                      @RequestParam(required = false) WorkOrderStatus status,
@@ -149,6 +150,7 @@ public class WorkOrderController {
      * <p>需要登录且有权限查看该工单。
      */
     @GetMapping("/{id}")
+    @SaCheckPermission("workorder:view")
     public Map<String, Object> detail(@PathVariable Long id) {
         Long currentUserId = StpUtil.getLoginIdAsLong();
         List<String> currentUserRoles = userService.getRoleCodes(currentUserId);
@@ -171,6 +173,7 @@ public class WorkOrderController {
     public Map<String, Object> assign(@PathVariable Long id,
                                       @RequestParam(required = false) Long assigneeId,
                                       @RequestParam(required = false) String assigneeRoleCode) {
+        requireCurrentActorAccess(id);
         boolean hasUser = assigneeId != null;
         boolean hasRole = assigneeRoleCode != null && !assigneeRoleCode.isBlank();
         if (!hasUser && !hasRole) {
@@ -203,6 +206,7 @@ public class WorkOrderController {
     @SaCheckPermission("workorder:close")
     public Map<String, Object> close(@PathVariable Long id,
                                      @RequestParam String resolution) {
+        requireCurrentActorAccess(id);
         WorkOrder order = workOrderService.close(id, resolution);
 
         Map<String, Object> result = new HashMap<>();
@@ -221,6 +225,7 @@ public class WorkOrderController {
     @SaCheckPermission("workorder:reject")
     public Map<String, Object> reject(@PathVariable Long id,
                                       @RequestParam String reason) {
+        requireCurrentActorAccess(id);
         WorkOrder order = workOrderService.reject(id, reason);
 
         Map<String, Object> result = new HashMap<>();
@@ -240,6 +245,7 @@ public class WorkOrderController {
     @SaCheckPermission("workorder:resubmit")
     public Map<String, Object> resubmit(@PathVariable Long id,
                                         @RequestBody ResubmitWorkOrderRequest request) {
+        requireCurrentActorAccess(id);
         WorkOrder updateData = new WorkOrder();
         updateData.setTitle(request.getTitle());
         updateData.setDescription(request.getDescription());
@@ -269,6 +275,7 @@ public class WorkOrderController {
     @SaCheckPermission("workorder:force-reject")
     public Map<String, Object> forceReject(@PathVariable Long id,
                                            @RequestParam String reason) {
+        requireCurrentActorAdministratorAccess(id);
         WorkOrder order = workOrderService.forceReject(id, reason);
 
         Map<String, Object> result = new HashMap<>();
@@ -291,6 +298,15 @@ public class WorkOrderController {
     @PostMapping("/batch-assign")
     @SaCheckPermission("workorder:assign")
     public Map<String, Object> batchAssign(@RequestBody BatchAssignRequest request) {
+        if (request.getWorkOrderIds() == null || request.getWorkOrderIds().isEmpty()) {
+            throw new WorkOrderException("工单ID列表不能为空");
+        }
+        for (Long workOrderId : request.getWorkOrderIds()) {
+            if (workOrderId == null) {
+                throw new WorkOrderException("工单ID不能为空");
+            }
+            requireCurrentActorAccess(workOrderId);
+        }
         boolean hasUser = request.getAssigneeId() != null;
         boolean hasRole = request.getAssigneeRoleCode() != null && !request.getAssigneeRoleCode().isBlank();
         if (!hasUser && !hasRole) {
@@ -316,6 +332,50 @@ public class WorkOrderController {
                 "failed", request.getWorkOrderIds().size() - successCount
         ));
         return result;
+    }
+
+    @GetMapping("/assignment-options/users")
+    @SaCheckPermission("workorder:assign")
+    public Map<String, Object> assignmentUsers() {
+        List<Map<String, Object>> users = userService.listActiveUsersByRoleCode("WAREHOUSE_ADMIN")
+                .stream().map(user -> {
+                    Map<String, Object> option = new HashMap<>();
+                    option.put("id", user.getId());
+                    option.put("username", user.getUsername());
+                    option.put("nickname", user.getNickname());
+                    return option;
+                }).toList();
+        return Map.of("code", 200, "data", users);
+    }
+
+    @GetMapping("/assignment-options/roles")
+    @SaCheckPermission("workorder:assign")
+    public Map<String, Object> assignmentRoles() {
+        List<Map<String, Object>> roles = roleMapper.selectList(new LambdaQueryWrapper<SysRole>()
+                        .eq(SysRole::getRoleCode, "WAREHOUSE_ADMIN"))
+                .stream().map(role -> {
+                    Map<String, Object> option = new HashMap<>();
+                    option.put("id", role.getId());
+                    option.put("roleCode", role.getRoleCode());
+                    option.put("roleName", role.getRoleName());
+                    return option;
+                }).toList();
+        return Map.of("code", 200, "data", roles);
+    }
+
+    private void requireCurrentActorAccess(Long workOrderId) {
+        Long currentUserId = StpUtil.getLoginIdAsLong();
+        List<String> roles = userService.getRoleCodes(currentUserId);
+        workOrderService.getByIdWithAccessCheck(workOrderId, currentUserId, roles);
+    }
+
+    private void requireCurrentActorAdministratorAccess(Long workOrderId) {
+        Long currentUserId = StpUtil.getLoginIdAsLong();
+        List<String> roles = userService.getRoleCodes(currentUserId);
+        if (!roles.contains("SYSTEM_ADMIN") && !roles.contains("GLOBAL_SYSTEM_ADMIN")) {
+            throw new WorkOrderException("仅系统管理员可强制驳回工单");
+        }
+        workOrderService.getByIdWithAccessCheck(workOrderId, currentUserId, roles);
     }
 
     // ----------------------------------------------------------------
@@ -350,6 +410,7 @@ public class WorkOrderController {
      * <p>需要登录且有权限查看该工单。
      */
     @GetMapping("/{id}/comments")
+    @SaCheckPermission("workorder:view")
     public Map<String, Object> listComments(@PathVariable Long id,
                                             @RequestParam(defaultValue = "1") int page,
                                             @RequestParam(defaultValue = "20") int pageSize) {
@@ -469,6 +530,18 @@ public class WorkOrderController {
                 }
             }
         }
+        // 全局管理员切入业务租户后可以作为工单提交人；仅对工单已引用的提交人 ID
+        // 回查平台租户用户，避免将任意其他业务租户用户带入当前租户响应。
+        orders.stream()
+                .map(WorkOrder::getSubmitterId)
+                .filter(id -> id != null && !userNameMap.containsKey(id))
+                .distinct()
+                .forEach(id -> {
+                    String platformName = resolvePlatformUserName(id);
+                    if (platformName != null) {
+                        userNameMap.put(id, platformName);
+                    }
+                });
 
         // 收集需要查询的角色编码
         Set<String> roleCodes = orders.stream()
@@ -533,7 +606,18 @@ public class WorkOrderController {
                 SysUser user = userService.getById(order.getSubmitterId());
                 name = user != null ? (user.getNickname() != null ? user.getNickname() : user.getUsername()) : null;
             }
+            if (name == null) {
+                name = resolvePlatformUserName(order.getSubmitterId());
+            }
             order.setSubmitterName(name);
         }
+    }
+
+    private String resolvePlatformUserName(Long userId) {
+        SysUser user = userService.getByIdIgnoreTenant(userId);
+        if (user == null || !Long.valueOf(0L).equals(user.getTenantId())) {
+            return null;
+        }
+        return user.getNickname() != null ? user.getNickname() : user.getUsername();
     }
 }

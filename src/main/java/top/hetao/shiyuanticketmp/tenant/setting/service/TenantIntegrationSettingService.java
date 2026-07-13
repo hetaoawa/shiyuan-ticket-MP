@@ -8,6 +8,7 @@ import top.hetao.shiyuanticketmp.tenant.setting.controller.dto.TenantIntegration
 import top.hetao.shiyuanticketmp.tenant.setting.controller.dto.TenantIntegrationSettingsRequest;
 import top.hetao.shiyuanticketmp.tenant.setting.entity.SysTenantSetting;
 import top.hetao.shiyuanticketmp.tenant.setting.mapper.SysTenantSettingMapper;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.List;
@@ -28,9 +29,12 @@ public class TenantIntegrationSettingService {
     );
 
     private final SysTenantSettingMapper settingMapper;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
-    public TenantIntegrationSettingService(SysTenantSettingMapper settingMapper) {
+    public TenantIntegrationSettingService(SysTenantSettingMapper settingMapper,
+                                           TenantLifecycleGuard tenantLifecycleGuard) {
         this.settingMapper = settingMapper;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     @Transactional(readOnly = true)
@@ -56,6 +60,7 @@ public class TenantIntegrationSettingService {
     @Transactional
     public TenantIntegrationSettings update(Long tenantId, TenantIntegrationSettingsRequest request) {
         requireBusinessTenant(tenantId);
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
         validateFullRequest(request);
         try (TenantContext.Scope ignored = TenantContext.useTenant(tenantId)) {
             settingMapper.upsert(tenantId, EXTERNAL_INBOUND_ENABLED,

@@ -44,6 +44,8 @@ public class WebhookEventQueueService {
     static final String CONSUMER_GROUP = "webhook-event-workers";
     private static final String LEGACY_QUEUE_KEY = "webhook:events:queue";
     private static final String LEGACY_PROCESSING_KEY = "webhook:events:processing";
+    private static final String DEDUPE_KEY_PREFIX = "webhook:{events}:dedupe:";
+    private static final long MINIMUM_DEDUPE_TTL_SECONDS = 300L;
 
     private static final DefaultRedisScript<Long> ACK_AND_DELETE_SCRIPT = longScript("""
             local pending = redis.call('XPENDING', KEYS[1], ARGV[1], ARGV[2], ARGV[2], 1)
@@ -109,6 +111,13 @@ public class WebhookEventQueueService {
             return moved
             """);
 
+    private static final DefaultRedisScript<Long> RELEASE_RESERVATION_SCRIPT = longScript("""
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            end
+            return 0
+            """);
+
     private final StringRedisTemplate redisTemplate;
     private final String consumerName;
     private final AtomicBoolean groupReady = new AtomicBoolean(false);
@@ -146,9 +155,31 @@ public class WebhookEventQueueService {
     @Value("${webhook.worker.dead-letter-max-length:10000}")
     private long configuredDeadLetterMaxLength = 10_000L;
 
+    @Value("${webhook.receiver.dedupe-ttl-seconds:600}")
+    private long configuredDedupeTtlSeconds = 600L;
+
     public WebhookEventQueueService(StringRedisTemplate redisTemplate) {
         this.redisTemplate = redisTemplate;
         this.consumerName = buildConsumerName();
+    }
+
+    /** Atomically reserves a signed event id. Null means another request already owns it. */
+    public String reserveEvent(String eventId) {
+        String token = UUID.randomUUID().toString();
+        Duration ttl = Duration.ofSeconds(Math.max(
+                MINIMUM_DEDUPE_TTL_SECONDS, configuredDedupeTtlSeconds));
+        Boolean acquired = redisTemplate.opsForValue()
+                .setIfAbsent(dedupeKey(eventId), token, ttl);
+        return Boolean.TRUE.equals(acquired) ? token : null;
+    }
+
+    /** Releases only the reservation created by the supplied owner token. */
+    public void releaseEventReservation(String eventId, String token) {
+        if (eventId == null || token == null) {
+            return;
+        }
+        redisTemplate.execute(RELEASE_RESERVATION_SCRIPT,
+                List.of(dedupeKey(eventId)), token);
     }
 
     /** Adds the original body and its stable sender metadata to the Stream. */
@@ -451,6 +482,10 @@ public class WebhookEventQueueService {
         script.setScriptText(text);
         script.setResultType(Long.class);
         return script;
+    }
+
+    private static String dedupeKey(String eventId) {
+        return DEDUPE_KEY_PREFIX + eventId;
     }
 
     private StreamOperations<String, String, String> streams() {

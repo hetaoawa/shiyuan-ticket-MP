@@ -18,6 +18,7 @@ import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserRoleMapper;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.ArrayList;
@@ -34,13 +35,16 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     private final SysPermissionMapper permissionMapper;
     private final SysUserRoleMapper userRoleMapper;
     private final PasswordEncoder passwordEncoder;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     public UserService(SysRoleMapper roleMapper, SysPermissionMapper permissionMapper,
-                       SysUserRoleMapper userRoleMapper, PasswordEncoder passwordEncoder) {
+                       SysUserRoleMapper userRoleMapper, PasswordEncoder passwordEncoder,
+                       TenantLifecycleGuard tenantLifecycleGuard) {
         this.roleMapper = roleMapper;
         this.permissionMapper = permissionMapper;
         this.userRoleMapper = userRoleMapper;
         this.passwordEncoder = passwordEncoder;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     @Transactional(readOnly = true)
@@ -95,6 +99,8 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     @Transactional
     public SysUser createUser(CreateUserRequest request) {
+        Long currentTenant = TenantContext.requireTenantId();
+        tenantLifecycleGuard.lockWritableTenant(currentTenant);
         if (getByUsername(request.getUsername()) != null) {
             throw new WorkOrderException("用户名已存在: " + request.getUsername());
         }
@@ -113,7 +119,6 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         user.setEmail(normalizeBlank(request.getEmail()));
         user.setExternalUserId(extId);
         user.setStatus(1);
-        Long currentTenant = TenantContext.requireTenantId();
         if (request.getTenantId() != null && !currentTenant.equals(request.getTenantId())) {
             throw new WorkOrderException("不能在当前租户上下文中创建其他租户用户");
         }
@@ -128,6 +133,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     @Transactional
     public void updateUser(Long userId, UpdateUserRequest request) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysUser user = getById(userId);
         if (user == null) {
             throw new WorkOrderException("用户不存在: " + userId);
@@ -191,6 +197,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     @Transactional
     @SuppressWarnings("unchecked")
     public void updateUserFromMap(Long userId, Map<String, Object> fields) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysUser user = getById(userId);
         if (user == null) {
             throw new WorkOrderException("用户不存在: " + userId);
@@ -258,6 +265,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     @Transactional
     public void resetPassword(Long userId, String newPassword) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysUser user = getById(userId);
         if (user == null) {
             throw new WorkOrderException("用户不存在: " + userId);
@@ -266,8 +274,52 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         updateById(user);
     }
 
+    /** Updates only the already-authenticated principal, independent of its active tenant. */
+    @Transactional
+    public void resetPrincipalPassword(Long principalUserId, String newPassword) {
+        if (principalUserId == null || newPassword == null || newPassword.isBlank()) {
+            throw new WorkOrderException("用户或新密码不能为空");
+        }
+        lockPrincipalTenant(principalUserId);
+        int affected;
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            affected = baseMapper.updatePrincipalPasswordIgnoreTenant(
+                    principalUserId, passwordEncoder.encode(newPassword));
+        }
+        if (affected != 1) {
+            throw new WorkOrderException("用户不存在: " + principalUserId);
+        }
+    }
+
+    /** Updates only the already-authenticated principal, preserving missing-field semantics. */
+    @Transactional
+    public void updatePrincipalProfile(Long principalUserId, Map<String, String> body) {
+        if (principalUserId == null || body == null) {
+            throw new WorkOrderException("用户或个人资料不能为空");
+        }
+        boolean nicknamePresent = body.containsKey("nickname") && body.get("nickname") != null;
+        boolean phonePresent = body.containsKey("phone");
+        boolean emailPresent = body.containsKey("email");
+        if (!nicknamePresent && !phonePresent && !emailPresent) {
+            return;
+        }
+        lockPrincipalTenant(principalUserId);
+        String phone = normalizeBlank(body.get("phone"));
+        String email = normalizeBlank(body.get("email"));
+        int affected;
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            affected = baseMapper.updatePrincipalProfileIgnoreTenant(
+                    principalUserId, nicknamePresent, body.get("nickname"),
+                    phonePresent, phone, emailPresent, email);
+        }
+        if (affected != 1) {
+            throw new WorkOrderException("用户不存在: " + principalUserId);
+        }
+    }
+
     @Transactional
     public void assignRoles(Long userId, List<Long> roleIds) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysUser user = getById(userId);
         if (user == null) {
             throw new WorkOrderException("用户不存在: " + userId);
@@ -320,6 +372,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
     @Transactional
     public void replaceTenantSystemAdmins(Long tenantId, List<Long> userIds) {
         requireCurrentTenant(tenantId);
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
         if (userIds == null) {
             throw new WorkOrderException("用户ID列表不能为空，使用空列表表示清空租户系统管理员");
         }
@@ -377,6 +430,11 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         return (value == null || value.isBlank()) ? null : value;
     }
 
+    @Transactional(readOnly = true)
+    public List<SysUser> listActiveUsersByRoleCode(String roleCode) {
+        return baseMapper.selectActiveUsersByRoleCode(roleCode);
+    }
+
     private static void requireCurrentTenant(Long tenantId) {
         Long current = TenantContext.requireTenantId();
         if (tenantId == null || !tenantId.equals(current) || tenantId <= 0) {
@@ -388,5 +446,27 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
             return baseMapper.selectByExternalUserIdIgnoreTenant(externalUserId);
         }
+    }
+
+    @Transactional
+    public void deleteUser(Long userId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        if (getById(userId) == null) {
+            throw new WorkOrderException("用户不存在: " + userId);
+        }
+        if (!removeById(userId)) {
+            throw new WorkOrderException("用户已被并发修改或删除: " + userId);
+        }
+    }
+
+    private void lockPrincipalTenant(Long principalUserId) {
+        SysUser principal;
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            principal = baseMapper.selectByIdIgnoreTenant(principalUserId);
+        }
+        if (principal == null || principal.getTenantId() == null) {
+            throw new WorkOrderException("用户不存在: " + principalUserId);
+        }
+        tenantLifecycleGuard.lockWritableTenant(principal.getTenantId());
     }
 }

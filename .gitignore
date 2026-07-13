@@ -34,7 +34,12 @@ build/
 
 ### OpenCode ###
 .env.local
+.env.prod
 /src/main/resources/application-dev.yml
+/src/main/resources/application-prod.yml
+
+### Local API tooling ###
+.apifox/
 
 ### Generated build and test artifacts ###
 *.log

@@ -10,6 +10,7 @@ import top.hetao.shiyuanticketmp.auth.mapper.SysPermissionMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRolePermissionMapper;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 
 import java.util.List;
 import java.util.Map;
@@ -20,20 +21,25 @@ public class RoleProvisioningService {
 
     private static final Map<String, Set<String>> STANDARD_PERMISSIONS = Map.of(
             "CARGO_OWNER", Set.of("workorder:create", "workorder:view", "workorder:assign",
-                    "workorder:resubmit", "workorder:force-reject", "workorder:comment", "workorder:export"),
+                    "workorder:resubmit", "workorder:comment", "workorder:export",
+                    "file:upload", "file:view", "file:delete"),
             "WAREHOUSE_ADMIN", Set.of("workorder:close", "workorder:reject", "workorder:view",
-                    "workorder:resubmit", "workorder:comment"));
+                    "workorder:resubmit", "workorder:comment",
+                    "file:upload", "file:view", "file:delete"));
 
     private final SysRoleMapper roleMapper;
     private final SysPermissionMapper permissionMapper;
     private final SysRolePermissionMapper rolePermissionMapper;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     public RoleProvisioningService(SysRoleMapper roleMapper,
                                    SysPermissionMapper permissionMapper,
-                                   SysRolePermissionMapper rolePermissionMapper) {
+                                   SysRolePermissionMapper rolePermissionMapper,
+                                   TenantLifecycleGuard tenantLifecycleGuard) {
         this.roleMapper = roleMapper;
         this.permissionMapper = permissionMapper;
         this.rolePermissionMapper = rolePermissionMapper;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     @Transactional
@@ -41,6 +47,8 @@ public class RoleProvisioningService {
         if (tenantId == null || tenantId <= 0) {
             throw new IllegalArgumentException("Business tenant id must be positive");
         }
+        // Safe for new tenants: this transaction already owns the inserted tenant row lock.
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
         try (TenantContext.Scope ignored = TenantContext.useTenant(tenantId)) {
             ensureRole(tenantId, "SYSTEM_ADMIN", "系统管理员", null);
             ensureRole(tenantId, "WAREHOUSE_ADMIN", "云仓管理员", STANDARD_PERMISSIONS.get("WAREHOUSE_ADMIN"));

@@ -2,9 +2,11 @@ package top.hetao.shiyuanticketmp.workorder.listener;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.webhook.sender.ChannelTarget;
 import top.hetao.shiyuanticketmp.webhook.sender.WebhookMessageAggregator;
 import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
@@ -42,9 +44,15 @@ public class WorkOrderWebhookListener {
     /**
      * 工单状态变更事件处理。
      */
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
+        try (TenantContext.Scope ignored = TenantContext.useTenant(event.getTenantId())) {
+            handleWorkOrderStateChanged(event);
+        }
+    }
+
+    private void handleWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
         WorkOrder order = event.getWorkOrder();
         String action = event.getAction();
 
@@ -60,6 +68,7 @@ public class WorkOrderWebhookListener {
         }
 
         WorkOrderEvent payload = WorkOrderEvent.of(order, event.getExtra());
+        payload.setTenantId(event.getTenantId());
         payload.setTargetChannels(target);
 
         log.info("[WebHook] 事件入队聚合器 action={} orderId={} target={}", action, order.getId(), target);
@@ -71,9 +80,15 @@ public class WorkOrderWebhookListener {
      *
      * <p>评论事件仅推送给货主侧（外部提交的工单）。
      */
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderComment(WorkOrderCommentEvent event) {
+        try (TenantContext.Scope ignored = TenantContext.useTenant(event.getTenantId())) {
+            handleWorkOrderComment(event);
+        }
+    }
+
+    private void handleWorkOrderComment(WorkOrderCommentEvent event) {
         WorkOrder order = event.getWorkOrder();
         if (order == null) {
             return;
@@ -88,7 +103,7 @@ public class WorkOrderWebhookListener {
         WorkOrderEvent payload = new WorkOrderEvent();
         payload.setEventId(UUID.randomUUID().toString());
         payload.setWorkOrderId(order.getId());
-        payload.setTenantId(order.getTenantId());
+        payload.setTenantId(event.getTenantId());
         payload.setTitle(order.getTitle());
         payload.setType(order.getType());
         payload.setTrackingNo(order.getTrackingNo());

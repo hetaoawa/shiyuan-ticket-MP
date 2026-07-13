@@ -10,12 +10,16 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
 import top.hetao.shiyuanticketmp.common.config.S3Config;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.file.entity.SysFile;
 import top.hetao.shiyuanticketmp.file.mapper.SysFileMapper;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.time.Duration;
@@ -34,14 +38,17 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
     private final S3Client s3Client;
     private final S3Presigner s3Presigner;
     private final S3Config s3Config;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     @Value("${s3.presign-expire-seconds:3600}")
     private long presignExpireSeconds;
 
-    public FileService(S3Client s3Client, S3Presigner s3Presigner, S3Config s3Config) {
+    public FileService(S3Client s3Client, S3Presigner s3Presigner, S3Config s3Config,
+                       TenantLifecycleGuard tenantLifecycleGuard) {
         this.s3Client = s3Client;
         this.s3Presigner = s3Presigner;
         this.s3Config = s3Config;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     /**
@@ -53,12 +60,14 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
     public Map<String, Object> generateUploadUrl(String originalName, String contentType,
                                                   Long fileSize, String bizType,
                                                   Long bizId, Long uploaderId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         String storageKey = buildStorageKey(originalName);
 
         PutObjectRequest putRequest = PutObjectRequest.builder()
                 .bucket(s3Config.getBucket())
                 .key(storageKey)
                 .contentType(contentType)
+                .contentLength(fileSize)
                 .build();
 
         PresignedPutObjectRequest presigned = s3Presigner.presignPutObject(r -> r
@@ -66,7 +75,6 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
                 .putObjectRequest(putRequest));
 
         String uploadUrl = presigned.url().toString();
-        log.info("[S3] 生成上传预签名URL: fileName={}, contentType={}, fileSize={}, uploadUrl={}", originalName, contentType, fileSize, uploadUrl);
 
         SysFile sysFile = new SysFile();
         sysFile.setOriginalName(originalName);
@@ -77,6 +85,8 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         sysFile.setBizId(bizId);
         sysFile.setUploaderId(uploaderId);
         save(sysFile);
+        log.info("[S3] upload URL issued fileId={} storageKey={} expireSeconds={}",
+                sysFile.getId(), storageKey, presignExpireSeconds);
 
         Map<String, Object> result = new HashMap<>();
         result.put("fileId", sysFile.getId());
@@ -125,7 +135,31 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         if (sysFile == null) {
             throw new WorkOrderException("文件不存在");
         }
+        validateUploadedObject(sysFile);
         log.info("[S3] 确认上传完成: fileId={}, storageKey={}", fileId, sysFile.getStorageKey());
+    }
+
+    private void validateUploadedObject(SysFile sysFile) {
+        HeadObjectResponse head;
+        try {
+            head = s3Client.headObject(HeadObjectRequest.builder()
+                    .bucket(s3Config.getBucket())
+                    .key(sysFile.getStorageKey())
+                    .build());
+        } catch (Exception e) {
+            throw new WorkOrderException("无法确认已上传文件");
+        }
+        Long contentLength = head.contentLength();
+        String contentType = head.contentType();
+        if (contentLength == null || contentLength <= 0 || contentLength > 10L * 1024 * 1024
+                || !contentLength.equals(sysFile.getFileSize())) {
+            throw new WorkOrderException("已上传文件大小与声明不一致或超过 10MB");
+        }
+        if (contentType == null || !contentType.startsWith("image/")
+                || sysFile.getContentType() == null
+                || !contentType.equalsIgnoreCase(sysFile.getContentType())) {
+            throw new WorkOrderException("已上传文件类型与声明不一致或不是图片");
+        }
     }
 
     /**
@@ -135,6 +169,7 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
      */
     @Transactional
     public void deleteFile(Long fileId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         SysFile sysFile = getById(fileId);
         if (sysFile == null) {
             throw new WorkOrderException("文件不存在");

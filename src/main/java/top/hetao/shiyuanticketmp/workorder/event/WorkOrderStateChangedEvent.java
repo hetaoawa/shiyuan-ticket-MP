@@ -16,21 +16,30 @@ import java.util.Map;
  */
 public class WorkOrderStateChangedEvent extends ApplicationEvent {
 
+    private final Long tenantId;
     private final WorkOrder workOrder;
     private final WorkOrderStatus previousStatus;
     private final String action;
     private final Long operatorId;
     private final Map<String, Object> extra;
 
-    public WorkOrderStateChangedEvent(Object source, WorkOrder workOrder,
+    public WorkOrderStateChangedEvent(Object source, Long tenantId, WorkOrder workOrder,
                                        WorkOrderStatus previousStatus, String action,
                                        Long operatorId, Map<String, Object> extra) {
         super(source);
+        if (tenantId == null) {
+            throw new IllegalArgumentException("tenantId is required for work-order events");
+        }
+        this.tenantId = tenantId;
         this.workOrder = workOrder;
         this.previousStatus = previousStatus;
         this.action = action;
         this.operatorId = operatorId;
         this.extra = extra;
+    }
+
+    public Long getTenantId() {
+        return tenantId;
     }
 
     public WorkOrder getWorkOrder() {

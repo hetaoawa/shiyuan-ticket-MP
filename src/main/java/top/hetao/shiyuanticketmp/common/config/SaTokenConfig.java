@@ -40,7 +40,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
     private static final String[] AUTH_EXCLUDE_PATHS = {
             "/api/auth/login",
             "/api/webhook",
-            "/api/webhook/**",
+            "/api/webhook/cargo-owner",
             "/error",
             "/favicon.ico"
     };
@@ -50,7 +50,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/api/auth/login",
             "/api/auth/logout",
             "/api/webhook",
-            "/api/webhook/**",
+            "/api/webhook/cargo-owner",
             "/error",
             "/favicon.ico"
     };
@@ -111,6 +111,8 @@ public class SaTokenConfig implements WebMvcConfigurer {
         private static boolean isTenantNeutral(String uri) {
             if ("/api/auth/me".equals(uri)
                     || "/api/auth/switch-tenant".equals(uri)
+                    || "/api/auth/password".equals(uri)
+                    || "/api/auth/profile".equals(uri)
                     || "/api/system/version".equals(uri)) {
                 return true;
             }

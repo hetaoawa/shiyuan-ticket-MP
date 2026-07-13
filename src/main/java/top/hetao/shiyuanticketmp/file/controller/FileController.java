@@ -1,9 +1,12 @@
 package top.hetao.shiyuanticketmp.file.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.file.entity.SysFile;
 import top.hetao.shiyuanticketmp.file.service.FileService;
+import top.hetao.shiyuanticketmp.auth.service.UserService;
+import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.HashMap;
@@ -25,10 +28,17 @@ import java.util.Map;
 @RequestMapping("/api/files")
 public class FileController {
 
+    private static final String WORK_ORDER_IMAGE = "WORK_ORDER_IMAGE";
     private final FileService fileService;
+    private final WorkOrderService workOrderService;
+    private final UserService userService;
 
-    public FileController(FileService fileService) {
+    public FileController(FileService fileService,
+                          WorkOrderService workOrderService,
+                          UserService userService) {
         this.fileService = fileService;
+        this.workOrderService = workOrderService;
+        this.userService = userService;
     }
 
     /**
@@ -37,6 +47,7 @@ public class FileController {
      * <p>客户端拿到 URL 后直接 PUT 文件到 S3，无需经过服务器中转。
      */
     @PostMapping("/presign")
+    @SaCheckPermission("file:upload")
     public Map<String, Object> getUploadUrl(@RequestBody Map<String, Object> request) {
         String originalName = (String) request.get("originalName");
         String contentType = (String) request.get("contentType");
@@ -67,6 +78,8 @@ public class FileController {
         }
 
         Long uploaderId = StpUtil.getLoginIdAsLong();
+        List<String> roles = userService.getRoleCodes(uploaderId);
+        requireWorkOrderImageAccess(bizType, bizId, uploaderId, roles);
         Map<String, Object> result = fileService.generateUploadUrl(
                 originalName, contentType, fileSize, bizType, bizId, uploaderId);
 
@@ -83,7 +96,14 @@ public class FileController {
      * <p>客户端上传成功后回调，用于更新文件状态。
      */
     @PostMapping("/{id}/confirm")
+    @SaCheckPermission("file:upload")
     public Map<String, Object> confirmUpload(@PathVariable Long id) {
+        Long principalId = StpUtil.getLoginIdAsLong();
+        List<String> roles = userService.getRoleCodes(principalId);
+        SysFile file = requireFileAccess(id, principalId, roles);
+        if (!principalId.equals(file.getUploaderId())) {
+            throw new WorkOrderException("只能确认本人上传的文件");
+        }
         fileService.confirmUpload(id);
 
         Map<String, Object> result = new HashMap<>();
@@ -96,7 +116,10 @@ public class FileController {
      * 获取下载预签名 URL。
      */
     @GetMapping("/{id}/download")
+    @SaCheckPermission("file:view")
     public Map<String, Object> getDownloadUrl(@PathVariable Long id) {
+        Long principalId = StpUtil.getLoginIdAsLong();
+        requireFileAccess(id, principalId, userService.getRoleCodes(principalId));
         String downloadUrl = fileService.generateDownloadUrl(id);
 
         Map<String, Object> result = new HashMap<>();
@@ -109,8 +132,12 @@ public class FileController {
      * 查询业务关联的文件列表。
      */
     @GetMapping
+    @SaCheckPermission("file:view")
     public Map<String, Object> listByBiz(@RequestParam String bizType,
                                          @RequestParam Long bizId) {
+        Long principalId = StpUtil.getLoginIdAsLong();
+        requireWorkOrderImageAccess(bizType, bizId, principalId,
+                userService.getRoleCodes(principalId));
         List<SysFile> files = fileService.listByBiz(bizType, bizId);
 
         Map<String, Object> result = new HashMap<>();
@@ -123,12 +150,42 @@ public class FileController {
      * 删除文件。
      */
     @DeleteMapping("/{id}")
+    @SaCheckPermission("file:delete")
     public Map<String, Object> delete(@PathVariable Long id) {
+        Long principalId = StpUtil.getLoginIdAsLong();
+        List<String> roles = userService.getRoleCodes(principalId);
+        SysFile file = requireFileAccess(id, principalId, roles);
+        requireDeleteAuthority(file, principalId, roles);
         fileService.deleteFile(id);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
         result.put("message", "删除成功");
         return result;
+    }
+
+    private void requireWorkOrderImageAccess(String bizType, Long bizId,
+                                             Long principalId, List<String> roles) {
+        if (!WORK_ORDER_IMAGE.equals(bizType) || bizId == null) {
+            throw new WorkOrderException("文件业务类型必须为 WORK_ORDER_IMAGE 且工单 ID 不能为空");
+        }
+        workOrderService.getByIdWithAccessCheck(bizId, principalId, roles);
+    }
+
+    private SysFile requireFileAccess(Long fileId, Long principalId, List<String> roles) {
+        SysFile file = fileService.getById(fileId);
+        if (file == null) {
+            throw new WorkOrderException("文件不存在");
+        }
+        requireWorkOrderImageAccess(file.getBizType(), file.getBizId(), principalId, roles);
+        return file;
+    }
+
+    private void requireDeleteAuthority(SysFile file, Long principalId, List<String> roles) {
+        boolean administrator = roles.contains("SYSTEM_ADMIN")
+                || roles.contains("GLOBAL_SYSTEM_ADMIN");
+        if (!administrator && !principalId.equals(file.getUploaderId())) {
+            throw new WorkOrderException("只能删除本人上传的文件");
+        }
     }
 }
