@@ -165,6 +165,7 @@ public class CargoOwnerWebhookController {
             order.setConversationId(conversationId);
             order.setSenderStaffId(senderStaffId);
             order.setSubmitterId(submitter.getId());
+            order.setCreatedViaWebhook(true);
             // Webhook 无 Sa-Token session，显式继承映射用户的租户并限制作用域。
             order.setTenantId(submitter.getTenantId());
             WorkOrder created;

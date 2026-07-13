@@ -144,6 +144,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             throw new WorkOrderException("工单提交人不属于当前租户");
         }
         workOrder.setTenantId(tenantId);
+        if (workOrder.getCreatedViaWebhook() == null) {
+            workOrder.setCreatedViaWebhook(false);
+        }
         workOrder.setStatus(WorkOrderStatus.PENDING);
         if (workOrder.getType() == null) {
             workOrder.setType(typeResolver.resolve(workOrder.getTitle(), workOrder.getDescription()));
@@ -189,16 +192,13 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         }
 
         LocalDateTime now = LocalDateTime.now();
+        int affected = mapper.assignPendingToUser(workOrderId, assigneeId, now);
+        requireManualAssignmentClaim(affected, workOrderId);
+
         order.setAssigneeId(assigneeId);
         order.setAssigneeRole(null);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
         order.setAssignedAt(now);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getAssigneeId, assigneeId)
-                .set(WorkOrder::getAssigneeRole, null)
-                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
-                .set(WorkOrder::getAssignedAt, now)
-                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 派发成功 id={} assigneeId={}", workOrderId, assigneeId);
 
@@ -228,16 +228,13 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         validateWarehouseRole(assigneeRoleCode);
 
         LocalDateTime now = LocalDateTime.now();
+        int affected = mapper.assignPendingToRole(workOrderId, assigneeRoleCode, now);
+        requireManualAssignmentClaim(affected, workOrderId);
+
         order.setAssigneeId(null);
         order.setAssigneeRole(assigneeRoleCode);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
         order.setAssignedAt(now);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getAssigneeId, null)
-                .set(WorkOrder::getAssigneeRole, assigneeRoleCode)
-                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
-                .set(WorkOrder::getAssignedAt, now)
-                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 按角色派发成功 id={} assigneeRole={}", workOrderId, assigneeRoleCode);
 
@@ -246,6 +243,58 @@ public class WorkOrderServiceImpl implements WorkOrderService {
                 null, Map.of("assigneeRoleCode", assigneeRoleCode)));
 
         return order;
+    }
+
+    @Override
+    @Transactional
+    public boolean autoAssignExternalInbound(Long workOrderId, Long tenantId) {
+        Long activeTenantId = TenantContext.requireTenantId();
+        if (workOrderId == null || tenantId == null || tenantId <= 0 || !tenantId.equals(activeTenantId)) {
+            throw new WorkOrderException("自动派发租户上下文不匹配");
+        }
+
+        // Validate before the conditional UPDATE so permanent tenant/role setup
+        // errors leave the candidate untouched and observable for operators.
+        validateWarehouseRole("WAREHOUSE_ADMIN");
+
+        LocalDateTime assignedAt = LocalDateTime.now();
+        int affected = mapper.claimExternalInboundForWarehouseRole(workOrderId, tenantId, assignedAt);
+        if (affected == 0) {
+            log.debug("[工单自动派发] 工单已被其他实例或人工处理 tenantId={} orderId={}",
+                    tenantId, workOrderId);
+            return false;
+        }
+        if (affected != 1) {
+            throw new IllegalStateException("自动派发原子更新影响了异常行数: " + affected);
+        }
+
+        WorkOrder order = mapper.selectById(workOrderId);
+        if (order == null || !tenantId.equals(order.getTenantId())) {
+            // Throwing rolls the transaction back, preserving the invariant that
+            // a successful claim always has exactly one corresponding event.
+            throw new WorkOrderException("自动派发后无法读取工单: " + workOrderId);
+        }
+        order.setAssigneeId(null);
+        order.setAssigneeRole("WAREHOUSE_ADMIN");
+        order.setStatus(WorkOrderStatus.IN_PROGRESS);
+        order.setAssignedAt(assignedAt);
+
+        eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
+                this, order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
+                null, Map.of(
+                        "assigneeRoleCode", "WAREHOUSE_ADMIN",
+                        "autoAssignment", true)));
+        log.info("[工单自动派发] 成功 tenantId={} orderId={}", tenantId, workOrderId);
+        return true;
+    }
+
+    private void requireManualAssignmentClaim(int affected, Long workOrderId) {
+        if (affected == 0) {
+            throw new WorkOrderException("工单已被处理，无法重复派发: " + workOrderId);
+        }
+        if (affected != 1) {
+            throw new IllegalStateException("人工派发原子更新影响了异常行数: " + affected);
+        }
     }
 
     private void validateWarehouseRole(String roleCode) {
@@ -257,9 +306,10 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             throw new WorkOrderException("只能派发给云仓侧角色");
         }
         // 校验角色存在（用 selectList 避免 roleCode 跨租户重复时 TooManyResults）
+        Long tenantId = TenantContext.requireTenantId();
         List<SysRole> roles = roleMapper.selectList(
                 new LambdaQueryWrapper<SysRole>().eq(SysRole::getRoleCode, roleCode).last("LIMIT 1"));
-        if (roles.isEmpty()) {
+        if (roles.isEmpty() || !tenantId.equals(roles.get(0).getTenantId())) {
             throw new WorkOrderException("角色不存在: " + roleCode);
         }
     }

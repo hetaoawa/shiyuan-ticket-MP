@@ -71,6 +71,9 @@ public class WorkOrder extends BaseEntity {
     /** 货主侧发送人 ID（来自外部 WebHook 入站消息的 senderStaffId） */
     private String senderStaffId;
 
+    /** 是否由货主侧 WebHook 入站创建；仅此来源可参与自动派发。 */
+    private Boolean createdViaWebhook;
+
     // ---- 以下为瞬态展示字段，不映射数据库 ----
 
     /** 处理人用户昵称（按用户派发时由 Controller 层填充） */
