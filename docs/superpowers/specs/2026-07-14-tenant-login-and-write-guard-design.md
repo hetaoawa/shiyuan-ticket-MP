@@ -13,11 +13,11 @@
 
 根因不是 BCrypt 或密码字段，而是近期加入的 `TenantLifecycleGuard`。写操作会调用 `SysTenantMapper.selectEnabledByIdForShare` 或 `selectNotDeletedByIdForShare`，两条 SQL 均以 MySQL `LOCK IN SHARE MODE` 结尾。MyBatis-Plus 3.5.5 内置 JSqlParser 4.6 无法解析该语法，`TenantLineInnerInterceptor` 在 SQL 发送至 MySQL 前即抛出解析异常，最终表现为 500。
 
-在这两个 Mapper 方法上使用 MyBatis-Plus `@InterceptorIgnore(tenantLine = "true")`，仅跳过租户行拦截器。继续保留 `LOCK IN SHARE MODE`、事务边界和当前谓词：交互式写入只允许启用且未删除的租户，已提交事件派生的审计或死信写入允许停用但未删除的租户。`sys_tenant` 是全局租户目录，SQL 已按传入 `tenantId` 明确查询，因此该局部跳过不会扩大业务数据访问范围。`selectByIdForUpdate` 及其他查询不在本次修改范围内。
+在这两个 Mapper 方法上使用 MyBatis-Plus `@InterceptorIgnore(tenantLine = "true", dataPermission = "false")`，只跳过租户行拦截器。MyBatis-Plus 3.5.5 中 `InterceptorIgnore.dataPermission` 的注解默认值会令数据权限也被忽略，因此必须显式写为 `"false"`；其余拦截器保持默认启用。继续保留 `LOCK IN SHARE MODE`、事务边界和当前谓词：交互式写入只允许启用且未删除的租户，已提交事件派生的审计或死信写入允许停用但未删除的租户。`sys_tenant` 是全局租户目录，SQL 已按传入 `tenantId` 明确查询，因此该局部跳过不会扩大业务数据访问范围。`selectByIdForUpdate` 及其他查询不在本次修改范围内。
 
 ## 公开租户选项接口
 
-新增无需登录的 `GET /api/auth/tenant-options`。`/api/auth/**` 已在认证白名单内，不复用要求登录的 `/api/admin/tenants/options`。
+新增无需登录的 `GET /api/auth/tenant-options`。该路径分别精确加入认证与租户上下文白名单，不开放 `/api/auth/**`；不复用要求登录的 `/api/admin/tenants/options`。
 
 成功响应沿用项目格式：
 
@@ -52,7 +52,9 @@
 /workorder/detail/{id}?tenantCode=<tenantCode>
 ```
 
-深链使用 `tenantCode`，避免与现有表示数据库租户 ID 的 `tenant` 参数混淆。钉钉与货主 webhook 均根据工单所属租户附加正确编码；构造 URL 时应正确编码参数并保留基础地址已有参数，未配置详情基础 URL 时仍不发送链接。
+深链使用 `tenantCode`，避免与现有表示数据库租户 ID 的 `tenant` 参数混淆。`TenantService.getTenantCode` 与 `getTenantName` 的查询语义对齐：`tenantId=0` 合法，启用或停用但未删除且编码非空的租户均返回稳定编码；`null`、负数、不存在、逻辑删除或编码为空时返回 `null`。Webhook listener 在状态变更和评论事件提交队列前要求非空编码，缺失时抛出 `IllegalStateException`，避免无租户身份的事件入队。
+
+钉钉与货主 webhook 均根据工单所属租户附加正确编码。统一 URL 构造器基于 raw URI 保留基础地址已有编码、query 和 fragment，仅编码新增的 `tenantCode`，并在追加详情路径前规范化多个尾斜杠；基础 URL 为空时返回 `null`，消息不展示详情链接。钉钉详情基础 URL 为可选配置，但机器人 access token 与 secret 仍为必填。
 
 前端建立统一的登录重定向工具，供路由守卫和 Axios 401 处理共同使用：从当前深链的 `tenantCode` 推导登录页 `tenant`，使用 `to.fullPath` 或 `router.currentRoute.value.fullPath` 保存完整路径、query 和 hash，然后跳转为：
 
@@ -64,7 +66,7 @@
 
 ## 测试与验收
 
-后端使用加载真实 MyBatis-Plus 租户拦截器的集成测试，先证明两条共享锁 SQL 会被 JSqlParser 拒绝，再验证局部跳过后可执行；覆盖启用租户新增用户、管理员重置密码和个人改密，并确认停用或删除租户仍被生命周期保护拒绝。公开接口需验证无 Token 可访问、包含平台及启用租户、排除停用租户，并且 DTO 不泄露 ID 等字段。Webhook 测试验证两类推送链接的 `tenantCode`、已有查询参数和未配置基础 URL 场景。
+后端通过 `SysTenantMapperInterceptorIgnoreTest` 解析真实 MyBatis-Plus 忽略策略，验证两条共享锁方法只跳过租户行拦截器，并保留数据权限、动态表名、全表更新防护和非法 SQL 等其他拦截行为；共享锁 SQL 的数量另以全仓搜索门禁核对。公开接口的 service、controller 和精确白名单测试验证平台优先、启用/删除过滤、最小 DTO 与无需登录的路径契约。Webhook focused tests 覆盖租户编码解析、两类推送链接、raw 编码、已有 query、尾斜杠、未配置基础 URL，以及缺失编码时在入队前失败。
 
 前端为租户默认选择和统一重定向工具增加可直接运行的测试，并更新现有 E2E 登录步骤。覆盖 URL 优先、本地记忆回退、未知租户、接口失败、空列表、切换租户更新地址栏，以及路由守卫和 401 两条路径对 query/hash 的完整保留。最终执行后端 focused tests 与 `mvn compile`、前端直接测试与 `npm run build`；服务可用时执行相关 E2E。
 

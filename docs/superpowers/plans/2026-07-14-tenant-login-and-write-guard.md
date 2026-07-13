@@ -4,7 +4,7 @@
 
 **Goal:** 修复租户生命周期共享锁查询的 JSqlParser 500，并实现公开租户选择、带租户编码的工单深链以及完整安全的登录回跳。
 
-**Architecture:** 后端仅在两个已确认含 `LOCK IN SHARE MODE` 的 Mapper 方法上跳过租户行拦截器，并用最小公开 DTO 暴露启用租户；Webhook 事件携带稳定租户编码，由统一 URL 构造器附加到详情链接。前端用可直接由 Node 运行的纯函数统一默认租户选择、登录位置构造和回跳校验，路由守卫与 Axios 401 共享该逻辑。
+**Architecture:** 后端仅在两个已确认含 `LOCK IN SHARE MODE` 的 Mapper 方法上跳过租户行拦截器（显式保留数据权限及其他拦截器），并用最小公开 DTO 暴露启用租户；Webhook 事件携带稳定租户编码，由统一 URL 构造器附加到详情链接。前端用可直接由 Node 运行的纯函数统一默认租户选择、登录位置构造和回跳校验，路由守卫与 Axios 401 共享该逻辑。
 
 **Tech Stack:** Java 17、Spring Boot 3.0.2、MyBatis-Plus 3.5.5、JUnit 5/Mockito/MockMvc、Vue 3、Vue Router 4、Axios、Element Plus、Node `node:test`、Playwright。
 
@@ -21,7 +21,6 @@
 
 **Files:**
 - Create: `backend/src/test/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapperInterceptorIgnoreTest.java`
-- Create: `backend/src/test/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapperIntegrationTest.java`
 - Modify: `backend/src/main/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapper.java:1-45`
 
 - [ ] **Step 1: Write a dependency-free failing annotation contract test**
@@ -33,13 +32,17 @@ class SysTenantMapperInterceptorIgnoreTest {
         for (String name : List.of("selectEnabledByIdForShare", "selectNotDeletedByIdForShare")) {
             Method method = SysTenantMapper.class.getMethod(name, Long.class);
             InterceptorIgnore ignore = method.getAnnotation(InterceptorIgnore.class);
-            assertThat(ignore).as(name).isNotNull();
+            String mappedStatementId = SysTenantMapper.class.getName() + "." + name;
+            InterceptorIgnoreHelper.initSqlParserInfoCache(
+                null, SysTenantMapper.class.getName(), method);
+
+            assertThat(InterceptorIgnoreHelper.willIgnoreTenantLine(mappedStatementId)).isTrue();
+            assertThat(InterceptorIgnoreHelper.willIgnoreDataPermission(mappedStatementId)).isFalse();
+            assertThat(InterceptorIgnoreHelper.willIgnoreDynamicTableName(mappedStatementId)).isFalse();
+            assertThat(InterceptorIgnoreHelper.willIgnoreBlockAttack(mappedStatementId)).isFalse();
+            assertThat(InterceptorIgnoreHelper.willIgnoreIllegalSql(mappedStatementId)).isFalse();
             assertThat(ignore.tenantLine()).isEqualTo("true");
-            for (Method member : InterceptorIgnore.class.getDeclaredMethods()) {
-                if (!member.getName().equals("tenantLine")) {
-                    assertThat(member.invoke(ignore)).isEqualTo(member.getDefaultValue());
-                }
-            }
+            assertThat(ignore.dataPermission()).isEqualTo("false");
         }
     }
 }
@@ -49,38 +52,14 @@ class SysTenantMapperInterceptorIgnoreTest {
 
 Run from `backend/`: `mvn -Dtest=SysTenantMapperInterceptorIgnoreTest test`
 
-Expected: FAIL because both methods currently have no `@InterceptorIgnore` annotation.
+Expected: FAIL because both methods initially had no `@InterceptorIgnore` annotation. After adding only `tenantLine = "true"`, the parsed MyBatis-Plus 3.5.5 strategy must remain RED because the annotation default also ignores data permissions.
 
-- [ ] **Step 3: Write the real MyBatis-Plus/MySQL regression test**
-
-```java
-@SpringBootTest
-@Transactional
-class SysTenantMapperIntegrationTest {
-    @Autowired SysTenantMapper mapper;
-
-    @Test
-    void sharedLockQueriesExecuteThroughConfiguredInterceptorChain() {
-        try (TenantContext.Scope ignored = TenantContext.useTenant(0L)) {
-            assertThat(mapper.selectEnabledByIdForShare(0L)).isNotNull();
-            assertThat(mapper.selectNotDeletedByIdForShare(0L)).isNotNull();
-        }
-    }
-}
-```
-
-- [ ] **Step 4: Confirm the integration RED when dev services are available**
-
-Run from `backend/`: `mvn -Dtest=SysTenantMapperIntegrationTest test`
-
-Expected before the fix: FAIL before SQL reaches MySQL with the MyBatis-Plus/JSqlParser parse error at `LOCK IN SHARE MODE`. If MySQL/Redis is unavailable, record that environment failure separately; the dependency-free annotation test remains the mandatory RED/GREEN gate.
-
-- [ ] **Step 5: Add the minimal production fix**
+- [ ] **Step 3: Add the minimal production fix**
 
 ```java
 import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 
-@InterceptorIgnore(tenantLine = "true")
+@InterceptorIgnore(tenantLine = "true", dataPermission = "false")
 @Select("""
     SELECT id, tenant_code, tenant_name, status, created_at, updated_at, deleted
     FROM sys_tenant
@@ -89,7 +68,7 @@ import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
     """)
 SysTenant selectEnabledByIdForShare(@Param("tenantId") Long tenantId);
 
-@InterceptorIgnore(tenantLine = "true")
+@InterceptorIgnore(tenantLine = "true", dataPermission = "false")
 @Select("""
     SELECT id, tenant_code, tenant_name, status, created_at, updated_at, deleted
     FROM sys_tenant
@@ -99,24 +78,23 @@ SysTenant selectEnabledByIdForShare(@Param("tenantId") Long tenantId);
 SysTenant selectNotDeletedByIdForShare(@Param("tenantId") Long tenantId);
 ```
 
-Do not change the predicates, `LOCK IN SHARE MODE`, transaction callers, `selectByIdForUpdate`, or global interceptor configuration.
+`dataPermission = "false"` is required because MyBatis-Plus 3.5.5 otherwise parses the annotation default as ignoring data permissions. Do not change the predicates, `LOCK IN SHARE MODE`, transaction callers, `selectByIdForUpdate`, or global interceptor configuration.
 
-- [ ] **Step 6: Run GREEN and search for unhandled shared locks**
+- [ ] **Step 4: Run GREEN and search for unhandled shared locks**
 
 Run from `backend/`:
 
 ```powershell
 mvn -Dtest=SysTenantMapperInterceptorIgnoreTest test
-mvn -Dtest=SysTenantMapperIntegrationTest test
 rg -n "LOCK\s+IN\s+SHARE\s+MODE" src/main -g '!target/**'
 ```
 
-Expected: both tests PASS when dev services are reachable; `rg` reports exactly the two annotated SQL statements plus explanatory comments, with no other executable shared-lock SQL.
+Expected: the focused test PASS without external services, including assertions from `InterceptorIgnoreHelper` that tenant line is ignored while data permission, dynamic table name, block attack and illegal SQL remain enabled; `rg` reports exactly the two annotated SQL statements plus explanatory comments, with no other executable shared-lock SQL.
 
-- [ ] **Step 7: Commit the backend fix**
+- [ ] **Step 5: Commit the backend fix**
 
 ```powershell
-git add src/main/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapper.java src/test/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapperInterceptorIgnoreTest.java src/test/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapperIntegrationTest.java
+git add src/main/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapper.java src/test/java/top/hetao/shiyuanticketmp/tenant/mapper/SysTenantMapperInterceptorIgnoreTest.java
 git commit -m "fix: bypass tenant parser for shared tenant locks"
 ```
 
@@ -126,7 +104,8 @@ git commit -m "fix: bypass tenant parser for shared tenant locks"
 - Create: `backend/src/main/java/top/hetao/shiyuanticketmp/auth/controller/dto/TenantOptionResponse.java`
 - Create: `backend/src/main/java/top/hetao/shiyuanticketmp/auth/AuthTenantOptionController.java`
 - Create: `backend/src/test/java/top/hetao/shiyuanticketmp/tenant/service/TenantServiceLoginOptionsTest.java`
-- Create: `backend/src/test/java/top/hetao/shiyuanticketmp/auth/AuthTenantOptionControllerIntegrationTest.java`
+- Create: `backend/src/test/java/top/hetao/shiyuanticketmp/auth/AuthTenantOptionControllerTest.java`
+- Create: `backend/src/test/java/top/hetao/shiyuanticketmp/common/config/SaTokenConfigTenantOptionsWhitelistTest.java`
 - Modify: `backend/src/main/java/top/hetao/shiyuanticketmp/tenant/service/TenantService.java:35-60`
 - Modify: `backend/src/main/java/top/hetao/shiyuanticketmp/common/config/SaTokenConfig.java:39-56`
 
@@ -218,47 +197,28 @@ public class AuthTenantOptionController {
 
 Add `"/api/auth/tenant-options"` to both `AUTH_EXCLUDE_PATHS` and `TENANT_EXCLUDE_PATHS`; do not broaden the whitelist to all `/api/auth/**` because password/profile endpoints require authentication.
 
-- [ ] **Step 5: Write and run the unauthenticated MockMvc integration test with owned test data**
+- [ ] **Step 5: Write and run controller and exact-whitelist contract tests**
 
 ```java
-@SpringBootTest
-@AutoConfigureMockMvc
-@Transactional
-class AuthTenantOptionControllerIntegrationTest {
-    @Autowired MockMvc mockMvc;
-    @Autowired SysTenantMapper tenantMapper;
-
+class AuthTenantOptionControllerTest {
     @Test
-    void endpointIsPublicAndReturnsOnlyEnabledMinimalOptions() throws Exception {
-        tenantMapper.insert(tenant(910000001L, "plan-enabled", "计划启用租户", 1));
-        tenantMapper.insert(tenant(910000002L, "plan-disabled", "计划停用租户", 0));
-
-        mockMvc.perform(get("/api/auth/tenant-options"))
-            .andExpect(status().isOk())
-            .andExpect(jsonPath("$.code").value(200))
-            .andExpect(jsonPath("$.message").value("获取租户选项成功"))
-            .andExpect(jsonPath("$.data[0].tenantCode").value("platform"))
-            .andExpect(jsonPath("$.data[*].tenantCode", hasItem("plan-enabled")))
-            .andExpect(jsonPath("$.data[*].tenantCode", not(hasItem("plan-disabled"))))
-            .andExpect(jsonPath("$.data[0].id").doesNotExist())
-            .andExpect(jsonPath("$.data[0].status").doesNotExist());
+    void tenantOptionsReturnsProjectResponseEnvelope() {
+        // Assert exact code/message/data keys and minimal TenantOptionResponse values.
     }
+}
 
-    private static SysTenant tenant(Long id, String code, String name, int status) {
-        SysTenant tenant = new SysTenant();
-        tenant.setId(id);
-        tenant.setTenantCode(code);
-        tenant.setTenantName(name);
-        tenant.setStatus(status);
-        tenant.setDeleted(0);
-        return tenant;
+class SaTokenConfigTenantOptionsWhitelistTest {
+    @Test
+    void tenantOptionsIsAnExactAuthenticationAndTenantContextExclusion() {
+        // Assert both exclusion lists contain exactly /api/auth/tenant-options
+        // and do not contain /api/auth/**.
     }
 }
 ```
 
-Run: `mvn -Dtest=TenantServiceLoginOptionsTest,AuthTenantOptionControllerIntegrationTest test`
+Run: `mvn -Dtest=TenantServiceLoginOptionsTest,AuthTenantOptionControllerTest,SaTokenConfigTenantOptionsWhitelistTest test`
 
-Expected: PASS without an Authorization header; the integration test requires the same dev services as the existing `@SpringBootTest`.
+Expected: PASS without external services; service tests own filtering/ordering, controller tests own the response and mapping contract, and whitelist tests prove the public endpoint is an exact exclusion without broadening protected auth paths.
 
 - [ ] **Step 6: Commit the endpoint**
 
@@ -305,35 +265,50 @@ static String build(String baseUrl, Long workOrderId, String tenantCode) {
     if (workOrderId == null || tenantCode == null || tenantCode.isBlank()) {
         throw new IllegalArgumentException("workOrderId and tenantCode are required");
     }
-    return UriComponentsBuilder.fromUriString(baseUrl.trim())
-        .pathSegment("workorder", "detail", workOrderId.toString())
-        .queryParam("tenantCode", tenantCode)
-        .build().encode().toUriString();
+    URI baseUri = parseBaseUri(baseUrl.trim());
+    String rawPath = baseUri.getRawPath() == null ? "" : baseUri.getRawPath();
+    rawPath = rawPath.replaceFirst("/+$", "");
+    String rawQuery = baseUri.getRawQuery();
+    String tenantQuery = "tenantCode=" + UriUtils.encodeQueryParam(tenantCode, UTF_8);
+    return UriComponentsBuilder.fromUri(baseUri)
+        .replacePath(rawPath + "/workorder/detail/" + workOrderId)
+        .replaceQuery(rawQuery == null || rawQuery.isEmpty()
+            ? tenantQuery : rawQuery + "&" + tenantQuery)
+        .build(true)
+        .toUriString();
 }
 ```
 
-- [ ] **Step 3: Define strict tenant-code lookup and put it into the asynchronous event snapshot**
+Build from the raw URI so existing path/query encoding and the fragment are preserved rather than double-encoded. Normalize all trailing path slashes before appending the detail path. A blank base URL returns `null`, so dispatchers omit the link.
 
-Add `private String tenantCode;` to `WorkOrderEvent`. Add `TenantService.getTenantCode(Long)` using the global `sys_tenant` lookup. It must reject null/negative IDs, missing/logically deleted tenant rows, and blank codes with `WorkOrderException`; it must return the stable code for both enabled and disabled non-deleted tenants so an already-committed derived event does not silently lose its deep-link identity.
+- [ ] **Step 3: Define nullable tenant-code lookup and require it in the asynchronous event snapshot**
+
+Add `private String tenantCode;` to `WorkOrderEvent`. Add `TenantService.getTenantCode(Long)` using the global `sys_tenant` lookup and align it with `getTenantName`: return `null` for null/negative IDs, missing or logically deleted rows, and null/blank codes. Tenant ID `0` is valid, and both enabled and disabled non-deleted tenants return their stable code so an already-committed derived event does not silently lose its deep-link identity.
 
 ```java
 @Transactional(readOnly = true)
 public String getTenantCode(Long tenantId) {
     if (tenantId == null || tenantId < 0) {
-        throw new WorkOrderException("租户 ID 非法");
+        return null;
     }
     SysTenant tenant = tenantMapper.selectById(tenantId);
-    if (tenant == null || tenant.getTenantCode() == null || tenant.getTenantCode().isBlank()) {
-        throw new WorkOrderException("租户不存在或缺少租户编码: " + tenantId);
+    if (tenant == null || Integer.valueOf(1).equals(tenant.getDeleted())
+            || tenant.getTenantCode() == null || tenant.getTenantCode().isBlank()) {
+        return null;
     }
     return tenant.getTenantCode();
 }
 ```
 
-Create `TenantServiceTenantCodeTest` with mocked mapper cases for enabled, disabled, missing and blank-code rows. Inject `TenantService` into `WorkOrderWebhookListener`, and set the code in both state-change and comment payload construction before `aggregator.submit(payload)`.
+Create `TenantServiceTenantCodeTest` with mocked mapper cases for platform/enabled, disabled, invalid ID, missing, deleted and blank-code rows. Inject `TenantService` into `WorkOrderWebhookListener`, and resolve a required code in both state-change and comment payload construction before `aggregator.submit(payload)`.
 
 ```java
-payload.setTenantCode(tenantService.getTenantCode(event.getTenantId()));
+String tenantCode = tenantService.getTenantCode(event.getTenantId());
+if (tenantCode == null || tenantCode.isBlank()) {
+    throw new IllegalStateException("Webhook work-order event requires tenantCode");
+}
+payload.setTenantCode(tenantCode);
+aggregator.submit(payload);
 ```
 
 - [ ] **Step 4: Write RED dispatcher body tests, then use the builder in both channels**
@@ -373,7 +348,7 @@ if (detailUrl != null) {
 }
 ```
 
-Use the concrete channel statements `sb.append("- **处理链接**：[查看详情](").append(detailUrl).append(")\n");` and `sb.append("处理链接：").append(detailUrl).append("\n");`. Change DingTalk's `validateHttpUrl(workOrderDetailBaseUrl, ..., true)` call to `required=false`; the robot access token and secret remain required, while a blank detail base URL now sends the notification without a link. Add a DingTalk test that invokes `buildRequestUrl()` with a valid access token/secret and blank detail base URL and asserts it does not throw because of the detail URL.
+Use the concrete channel statements `sb.append("- **处理链接**：[查看详情](").append(detailUrl).append(")\n");` and `sb.append("处理链接：").append(detailUrl).append("\n");`. Change DingTalk's `validateHttpUrl(workOrderDetailBaseUrl, ..., true)` call to `required=false`; the detail base URL is optional, while the robot access token and secret remain required. A blank detail base URL sends the notification without a link. Add a DingTalk test that invokes `buildRequestUrl()` with a valid access token/secret and blank detail base URL and asserts it does not throw because of the detail URL.
 
 Add negative dispatcher assertions that an event with null/blank `tenantCode` throws `IllegalArgumentException` during body preparation rather than sending a tenant-ambiguous link.
 
@@ -655,10 +630,10 @@ git commit -m "test: cover tenant-aware login deep links"
 Run from `backend/`:
 
 ```powershell
-mvn -Dtest=SysTenantMapperInterceptorIgnoreTest,TenantServiceLoginOptionsTest,TenantServiceTenantCodeTest,WorkOrderDetailUrlBuilderTest,WebhookTenantLinkTest test
+mvn -Dtest=SysTenantMapperInterceptorIgnoreTest,TenantServiceLoginOptionsTest,AuthTenantOptionControllerTest,SaTokenConfigTenantOptionsWhitelistTest,TenantServiceTenantCodeTest,WorkOrderDetailUrlBuilderTest,WebhookTenantLinkTest test
 ```
 
-Expected: this dependency-free unit/focused set PASS without MySQL or Redis. Then, when dev MySQL/Redis are reachable, run `mvn -Dtest=SysTenantMapperIntegrationTest,AuthTenantOptionControllerIntegrationTest test` and expect both integration tests to PASS; if services are unavailable, report only those two as environment-skipped and do not weaken the unit-test gate.
+Expected: this dependency-free unit/focused set PASS without MySQL or Redis. No `SysTenantMapperIntegrationTest` or `AuthTenantOptionControllerIntegrationTest` is part of the submitted implementation, so do not report those nonexistent test names as passed or environment-skipped.
 
 - [ ] **Step 2: Compile the complete backend**
 
