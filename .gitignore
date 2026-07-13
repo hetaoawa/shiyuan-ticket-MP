@@ -35,3 +35,18 @@ build/
 ### OpenCode ###
 .env.local
 /src/main/resources/application-dev.yml
+
+### Generated build and test artifacts ###
+*.log
+/logs/
+**/surefire-reports/
+**/failsafe-reports/
+/coverage/
+/test-results/
+/playwright-report/
+/screenshots/
+/test-result*.json
+/integration-test-result*.json
+/test-upload*
+jacoco.exec
+dependency-reduced-pom.xml
