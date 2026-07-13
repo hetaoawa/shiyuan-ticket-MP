@@ -6,43 +6,45 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Component;
-
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.webhook.receiver.handler.WebhookEventRouter;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * WebHook 事件后台消费 Worker。
- *
- * <p>持续从 Redis 队列中弹出事件并处理，支持优雅关闭。
- *
- * <p><b>扩展点：</b>当前实现仅解析事件并打印日志，
- * 后续可接入具体业务处理器（如工单状态同步、消息通知等）。
- */
+/** Consumes webhook records with at-least-once delivery semantics. */
 @Component
 public class WebhookEventWorker {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookEventWorker.class);
-
-    /** 连续异常时的最大退避时间（毫秒） */
-    private static final long MAX_BACKOFF_MS = 30_000L;
-    /** 连续异常计数达到阈值后打印 WARN 而非 ERROR，防止日志洪水 */
+    private static final long MAX_INFRASTRUCTURE_BACKOFF_MS = 30_000L;
     private static final int WARN_THRESHOLD = 5;
 
-    /** 启动延迟（毫秒），等待 Redis/DB 就绪 */
     @Value("${webhook.worker.startup-delay-ms:5000}")
-    private long startupDelayMs;
+    private long startupDelayMs = 5_000L;
+
+    @Value("${webhook.worker.lease-heartbeat-interval-ms:5000}")
+    private long leaseHeartbeatIntervalMs = 5_000L;
+
+    @Value("${webhook.worker.lease-timeout-ms:30000}")
+    private long leaseTimeoutMs = 30_000L;
+
+    @Value("${webhook.worker.shutdown-grace-ms:10000}")
+    private long shutdownGraceMs = 10_000L;
 
     private final WebhookEventQueueService queueService;
     private final ObjectMapper objectMapper;
     private final WebhookEventRouter router;
-
-    private final AtomicBoolean running = new AtomicBoolean(true);
+    private final AtomicBoolean accepting = new AtomicBoolean(true);
+    private final AtomicBoolean destroyed = new AtomicBoolean(false);
+    private final Object lifecycleMonitor = new Object();
     private ExecutorService executor;
+    private ScheduledExecutorService leaseExecutor;
 
     public WebhookEventWorker(WebhookEventQueueService queueService,
                               ObjectMapper objectMapper,
@@ -54,93 +56,199 @@ public class WebhookEventWorker {
 
     @PostConstruct
     public void start() {
-        executor = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "webhook-event-worker");
-            t.setDaemon(true);
-            return t;
+        ensureLeaseExecutor();
+        executor = Executors.newSingleThreadExecutor(runnable -> {
+            Thread thread = new Thread(runnable, "webhook-event-worker");
+            thread.setDaemon(true);
+            return thread;
         });
         executor.submit(this::runWithStartupDelay);
-        log.info("[WebHook Worker] 已提交启动任务, {}ms后开始消费", startupDelayMs);
-    }
-
-    private void runWithStartupDelay() {
-        sleep(startupDelayMs);
-        log.info("[WebHook Worker] 开始消费事件");
-        run();
+        log.info("[Webhook worker] scheduled startup in {}ms consumer={}",
+                startupDelayMs, queueService.consumerName());
     }
 
     @PreDestroy
     public void stop() {
-        running.set(false);
+        accepting.set(false);
+        boolean forced = false;
         if (executor != null) {
             executor.shutdown();
+            try {
+                if (!executor.awaitTermination(Math.max(0L, shutdownGraceMs), TimeUnit.MILLISECONDS)) {
+                    forced = true;
+                }
+            } catch (InterruptedException e) {
+                forced = true;
+                Thread.currentThread().interrupt();
+            }
         }
-        log.info("[WebHook Worker] 已停止");
+        synchronized (lifecycleMonitor) {
+            destroyed.set(true);
+        }
+        if (forced && executor != null) {
+            executor.shutdownNow();
+        }
+        if (leaseExecutor != null) {
+            leaseExecutor.shutdownNow();
+        }
+        log.info("[Webhook worker] stopped consumer={} forced={}", queueService.consumerName(), forced);
     }
 
-    private void run() {
-        int consecutiveErrors = 0;
+    private void runWithStartupDelay() {
+        sleep(startupDelayMs);
+        if (accepting.get()) {
+            runLoop();
+        }
+    }
 
-        while (running.get()) {
+    private void runLoop() {
+        int infrastructureErrors = 0;
+        while (accepting.get()) {
+            WebhookEventRecord event = null;
+            boolean processingStarted = false;
             try {
-                String eventJson = queueService.popBlocking();
-                if (eventJson == null) {
-                    // 超时，正常情况，重置错误计数
-                    consecutiveErrors = 0;
+                event = queueService.claimNext();
+                if (event == null) {
+                    infrastructureErrors = 0;
                     continue;
                 }
-                processEvent(eventJson);
-                queueService.ack(eventJson);
-                consecutiveErrors = 0; // 处理成功，重置计数
-            } catch (Exception e) {
-                if (!running.get()) {
+                if (!accepting.get()) {
+                    log.info("[Webhook worker] shutdown raced with claim; leaving record pending recordId={}",
+                            event.recordId());
+                    continue;
+                }
+                processingStarted = true;
+                if (queueService.hasExceededAttemptLimit(event)) {
+                    boolean moved = queueService.fail(event, null);
+                    log.warn("[Webhook worker] pending record exceeded attempt limit eventId={} attempt={} deadLettered={}",
+                            event.eventId(), event.deliveryAttempt(), moved);
+                    continue;
+                }
+                processClaimed(event);
+                infrastructureErrors = 0;
+            } catch (Exception failure) {
+                if (destroyed.get()) {
                     break;
                 }
-
-                consecutiveErrors++;
-                long backoff = Math.min(1000L * (1L << Math.min(consecutiveErrors - 1, 4)), MAX_BACKOFF_MS);
-
-                if (consecutiveErrors <= WARN_THRESHOLD) {
-                    log.error("[WebHook Worker] 处理异常 (连续第{}次), {}ms后重试", consecutiveErrors, backoff, e);
+                if (event != null && processingStarted) {
+                    handleEventFailure(event, failure);
+                    infrastructureErrors = 0;
+                } else if (!accepting.get()) {
+                    break;
                 } else {
-                    // 超过阈值后降级为 WARN，防止日志洪水；每 10 次打印一次完整堆栈
-                    if (consecutiveErrors % 10 == 0) {
-                        log.warn("[WebHook Worker] 持续异常 (连续第{}次), {}ms后重试", consecutiveErrors, backoff, e);
-                    } else {
-                        log.warn("[WebHook Worker] 持续异常 (连续第{}次), {}ms后重试, error={}",
-                                consecutiveErrors, backoff, e.getMessage());
-                    }
+                    infrastructureErrors++;
+                    logInfrastructureFailure(infrastructureErrors, failure);
+                    sleep(infrastructureBackoff(infrastructureErrors));
                 }
-
-                sleep(backoff);
             }
         }
     }
 
-    private void sleep(long ms) {
+    /** Processes one already-claimed record and ACKs only after the router returns successfully. */
+    void processClaimed(WebhookEventRecord event) {
+        LeaseHeartbeat heartbeat = startLeaseHeartbeat(event);
         try {
-            Thread.sleep(ms);
+            JsonNode root = objectMapper.readTree(event.payload());
+            router.route(root);
+            synchronized (lifecycleMonitor) {
+                if (!destroyed.get() && (heartbeat == null || heartbeat.owned().get()) && !queueService.ack(event)) {
+                    log.warn("[Webhook worker] ACK skipped because ownership changed eventId={} recordId={}",
+                            event.eventId(), event.recordId());
+                }
+            }
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Webhook event processing failed", e);
+        } finally {
+            if (heartbeat != null) {
+                heartbeat.future().cancel(false);
+            }
+        }
+    }
+
+    private LeaseHeartbeat startLeaseHeartbeat(WebhookEventRecord event) {
+        synchronized (lifecycleMonitor) {
+            if (destroyed.get()) {
+                return null;
+            }
+            AtomicBoolean owned = new AtomicBoolean(true);
+            long configured = Math.max(1L, leaseHeartbeatIntervalMs);
+            long safeMaximum = Math.max(1L, Math.max(1L, leaseTimeoutMs) / 3L);
+            long interval = Math.min(configured, safeMaximum);
+            ScheduledFuture<?> future = ensureLeaseExecutor().scheduleAtFixedRate(() -> {
+                if (destroyed.get() || !owned.get()) {
+                    return;
+                }
+                try {
+                    if (!queueService.renewLease(event)) {
+                        owned.set(false);
+                        log.warn("[Webhook worker] lease ownership lost eventId={} recordId={}",
+                                event.eventId(), event.recordId());
+                    }
+                } catch (Exception e) {
+                    log.error("[Webhook worker] lease heartbeat failed eventId={} recordId={}",
+                            event.eventId(), event.recordId(), e);
+                }
+            }, 0L, interval, TimeUnit.MILLISECONDS);
+            return new LeaseHeartbeat(future, owned);
+        }
+    }
+
+    private synchronized ScheduledExecutorService ensureLeaseExecutor() {
+        if (leaseExecutor == null || leaseExecutor.isShutdown()) {
+            leaseExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+                Thread thread = new Thread(runnable, "webhook-event-lease-heartbeat");
+                thread.setDaemon(true);
+                return thread;
+            });
+        }
+        return leaseExecutor;
+    }
+
+    private void handleEventFailure(WebhookEventRecord event, Exception failure) {
+        try {
+            boolean deadLettered = queueService.fail(event, failure);
+            if (deadLettered) {
+                log.error("[Webhook worker] moved failed event to dead-letter eventId={} recordId={} attempts={} "
+                                + "approximateRetentionMaxLength={}",
+                        event.eventId(), event.recordId(), event.deliveryAttempt(),
+                        queueService.deadLetterMaxLength(), failure);
+            } else {
+                log.warn("[Webhook worker] event remains pending for retry eventId={} recordId={} attempt={} error={}",
+                        event.eventId(), event.recordId(), event.deliveryAttempt(), failure.getMessage());
+            }
+        } catch (Exception queueFailure) {
+            failure.addSuppressed(queueFailure);
+            log.error("[Webhook worker] failed to record event failure; record remains pending eventId={} recordId={}",
+                    event.eventId(), event.recordId(), failure);
+            sleep(1_000L);
+        }
+    }
+
+    private void logInfrastructureFailure(int count, Exception failure) {
+        long backoff = infrastructureBackoff(count);
+        if (count <= WARN_THRESHOLD || count % 10 == 0) {
+            log.error("[Webhook worker] queue infrastructure failure count={} retryInMs={}", count, backoff, failure);
+        } else {
+            log.warn("[Webhook worker] queue infrastructure failure count={} retryInMs={} error={}",
+                    count, backoff, failure.getMessage());
+        }
+    }
+
+    private static long infrastructureBackoff(int count) {
+        int shift = Math.min(Math.max(0, count - 1), 4);
+        return Math.min(1_000L * (1L << shift), MAX_INFRASTRUCTURE_BACKOFF_MS);
+    }
+
+    private static void sleep(long milliseconds) {
+        try {
+            Thread.sleep(Math.max(0L, milliseconds));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
-    /**
-     * 处理单个 WebHook 事件。
-     *
-     * <p>解析 JSON 后交由 {@link WebhookEventRouter} 路由到具体处理器。
-     * 未注册 eventType 的事件仅记录日志，不抛异常（避免无意义重试）。
-     */
-    private void processEvent(String eventJson) {
-        try {
-            JsonNode root = objectMapper.readTree(eventJson);
-            router.route(root);
-        } catch (RuntimeException e) {
-            log.error("[WebHook Worker] 事件处理失败: {}", eventJson, e);
-            throw e;
-        } catch (Exception e) {
-            log.error("[WebHook Worker] 事件处理失败: {}", eventJson, e);
-            throw new RuntimeException("事件处理异常", e);
-        }
+    private record LeaseHeartbeat(ScheduledFuture<?> future, AtomicBoolean owned) {
     }
 }

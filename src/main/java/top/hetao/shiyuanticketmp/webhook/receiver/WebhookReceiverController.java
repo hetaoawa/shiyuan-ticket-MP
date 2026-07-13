@@ -103,7 +103,7 @@ public class WebhookReceiverController {
         }
 
         // 5. 入队（快速返回）
-        queueService.push(body);
+        queueService.push(eventId, eventType, timestamp, body);
         log.info("[WebHook接收] 事件已入队 eventId={} eventType={}", eventId, eventType);
 
         return ResponseEntity.ok(Map.of(

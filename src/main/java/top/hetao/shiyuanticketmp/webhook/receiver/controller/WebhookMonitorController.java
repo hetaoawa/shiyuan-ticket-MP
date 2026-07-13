@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.webhook.receiver.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -25,11 +26,13 @@ public class WebhookMonitorController {
      * 获取队列状态。
      */
     @GetMapping("/queue/status")
+    @SaCheckPermission("webhook:monitor")
     public Map<String, Object> queueStatus() {
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
         result.put("queueSize", queueService.queueSize());
         result.put("processingSize", queueService.processingSize());
+        result.put("deadLetterSize", queueService.deadLetterSize());
         return result;
     }
 }
