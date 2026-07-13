@@ -79,6 +79,7 @@ public class WorkOrderWebhookListener {
         WorkOrderEvent payload = new WorkOrderEvent();
         payload.setEventId(UUID.randomUUID().toString());
         payload.setWorkOrderId(order.getId());
+        payload.setTenantId(order.getTenantId());
         payload.setTitle(order.getTitle());
         payload.setType(order.getType());
         payload.setTrackingNo(order.getTrackingNo());

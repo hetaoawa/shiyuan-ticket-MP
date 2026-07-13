@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterRecord;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
@@ -164,6 +165,7 @@ public abstract class AbstractWebhookDispatcher {
             String payloadStr = new String(body, StandardCharsets.UTF_8);
             WebhookDeadLetterRecord record = WebhookDeadLetterRecord.of(
                     eventId, eventType, targetUrl, payloadStr, lastError, attempts);
+            record.setTenantId(TenantContext.requireTenantId());
             deadLetterService.save(record);
         } catch (Exception e) {
             log.error("[{}][死信] 落库异常！eventId={}", channelName(), eventId, e);

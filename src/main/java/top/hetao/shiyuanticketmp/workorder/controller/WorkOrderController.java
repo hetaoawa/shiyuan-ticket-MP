@@ -25,6 +25,8 @@ import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
@@ -48,15 +50,18 @@ public class WorkOrderController {
     private final WorkOrderCommentService commentService;
     private final UserService userService;
     private final SysRoleMapper roleMapper;
+    private final TenantService tenantService;
 
     public WorkOrderController(WorkOrderService workOrderService,
                                WorkOrderCommentService commentService,
                                UserService userService,
-                               SysRoleMapper roleMapper) {
+                               SysRoleMapper roleMapper,
+                               TenantService tenantService) {
         this.workOrderService = workOrderService;
         this.commentService = commentService;
         this.userService = userService;
         this.roleMapper = roleMapper;
+        this.tenantService = tenantService;
     }
 
     /**
@@ -327,9 +332,10 @@ public class WorkOrderController {
     public Map<String, Object> addComment(@PathVariable Long id,
                                           @RequestBody AddCommentRequest request) {
         Long commenterId = StpUtil.getLoginIdAsLong();
+        List<String> commenterRoles = userService.getRoleCodes(commenterId);
         WorkOrderComment comment = commentService.addComment(
                 id, request.getContent(), commenterId,
-                request.getCommentType(), request.getAttachments());
+                request.getCommentType(), request.getAttachments(), commenterRoles);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -386,10 +392,13 @@ public class WorkOrderController {
         StringBuilder csv = new StringBuilder();
         // CSV header (BOM for Excel)
         csv.append("\uFEFF");
-        csv.append("工单ID,标题,描述,物流单号,目标地址,类型,优先级,状态,提交人ID,处理人ID,派发角色,处理结论,驳回原因,创建时间,派发时间,关闭时间\n");
+        csv.append("工单ID,租户ID,租户名称,标题,描述,物流单号,目标地址,类型,优先级,状态,提交人ID,处理人ID,派发角色,处理结论,驳回原因,创建时间,派发时间,关闭时间\n");
 
+        String exportTenantName = tenantService.getTenantName(TenantContext.requireTenantId());
         for (WorkOrder o : orders) {
             csv.append(o.getId()).append(",");
+            csv.append(o.getTenantId()).append(",");
+            csv.append(escapeCsv(exportTenantName)).append(",");
             csv.append(escapeCsv(o.getTitle())).append(",");
             csv.append(escapeCsv(o.getDescription())).append(",");
             csv.append(escapeCsv(o.getTrackingNo())).append(",");
@@ -438,6 +447,7 @@ public class WorkOrderController {
      */
     private void enrichWorkOrders(List<WorkOrder> orders) {
         if (orders == null || orders.isEmpty()) return;
+        String tenantName = tenantService.getTenantName(TenantContext.requireTenantId());
 
         // 收集需要查询的用户 ID
         Set<Long> userIds = orders.stream()
@@ -453,7 +463,7 @@ public class WorkOrderController {
         Map<Long, String> userNameMap = new HashMap<>();
         if (!userIds.isEmpty()) {
             for (Long uid : userIds) {
-                SysUser user = userService.getByIdIgnoreTenant(uid);
+                SysUser user = userService.getById(uid);
                 if (user != null) {
                     userNameMap.put(uid, user.getNickname() != null ? user.getNickname() : user.getUsername());
                 }
@@ -482,12 +492,14 @@ public class WorkOrderController {
 
         // 填充
         for (WorkOrder order : orders) {
+            order.setTenantName(tenantName);
             enrichWorkOrder(order, userNameMap, roleNameMap);
         }
     }
 
     private void enrichWorkOrder(WorkOrder order) {
         if (order == null) return;
+        order.setTenantName(tenantService.getTenantName(order.getTenantId()));
         Map<Long, String> userNameMap = new HashMap<>();
         Map<String, String> roleNameMap = new HashMap<>();
         enrichWorkOrder(order, userNameMap, roleNameMap);
@@ -497,7 +509,7 @@ public class WorkOrderController {
         if (order.getAssigneeId() != null) {
             String name = userNameMap.get(order.getAssigneeId());
             if (name == null) {
-                SysUser user = userService.getByIdIgnoreTenant(order.getAssigneeId());
+                SysUser user = userService.getById(order.getAssigneeId());
                 name = user != null ? (user.getNickname() != null ? user.getNickname() : user.getUsername()) : null;
             }
             order.setAssigneeName(name);
@@ -518,7 +530,7 @@ public class WorkOrderController {
         if (order.getSubmitterId() != null) {
             String name = userNameMap.get(order.getSubmitterId());
             if (name == null) {
-                SysUser user = userService.getByIdIgnoreTenant(order.getSubmitterId());
+                SysUser user = userService.getById(order.getSubmitterId());
                 name = user != null ? (user.getNickname() != null ? user.getNickname() : user.getUsername()) : null;
             }
             order.setSubmitterName(name);

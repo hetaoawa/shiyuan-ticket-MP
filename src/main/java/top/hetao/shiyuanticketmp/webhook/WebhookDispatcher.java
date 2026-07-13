@@ -9,6 +9,7 @@ import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.util.HMACUtils;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterRecord;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -135,9 +136,11 @@ public class WebhookDispatcher {
      */
     @Async("webhookExecutor")
     public void dispatchRaw(String targetUrl, String eventType,
-                            String eventId, byte[] rawBody) {
+                            String eventId, byte[] rawBody, Long tenantId) {
         log.info("[WebHook][补偿] 开始重投 eventId={} type={}", eventId, eventType);
-        doDispatchWithRetry(targetUrl, eventType, eventId, rawBody);
+        try (TenantContext.Scope ignored = TenantContext.useTenant(tenantId)) {
+            doDispatchWithRetry(targetUrl, eventType, eventId, rawBody);
+        }
     }
 
     // ----------------------------------------------------------------
@@ -257,6 +260,7 @@ public class WebhookDispatcher {
             String payloadStr = new String(body, StandardCharsets.UTF_8);
             WebhookDeadLetterRecord record = WebhookDeadLetterRecord.of(
                     eventId, eventType, targetUrl, payloadStr, lastError, attempts);
+            record.setTenantId(TenantContext.requireTenantId());
             deadLetterService.save(record);
         } catch (Exception e) {
             // 死信落库自身也失败时，至少保证日志可查，告警系统可据此触发人工介入

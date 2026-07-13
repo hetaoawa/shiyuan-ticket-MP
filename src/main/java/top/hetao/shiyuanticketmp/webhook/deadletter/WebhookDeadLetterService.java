@@ -129,7 +129,8 @@ public class WebhookDeadLetterService {
                 record.getTargetUrl(),
                 record.getEventType(),
                 record.getEventId(),   // ← 保持原 eventId 不变，接收方幂等
-                record.getPayload().getBytes(java.nio.charset.StandardCharsets.UTF_8)
+                record.getPayload().getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                record.getTenantId()
         );
 
         record.markResolved(operator);

@@ -6,6 +6,7 @@ import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.workorder.cache.WorkOrderCacheManager;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderStateChangedEvent;
 
@@ -31,11 +32,13 @@ public class WorkOrderCacheListener {
     public void onWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
         WorkOrder order = event.getWorkOrder();
 
-        // 先清除旧缓存
-        cacheManager.evictWorkOrder(order.getId());
+        try (TenantContext.Scope ignored = TenantContext.useTenant(order.getTenantId())) {
+            // 先清除旧缓存
+            cacheManager.evictWorkOrder(order.getId());
 
-        // 写入最新数据（write-through）
-        cacheManager.cacheWorkOrder(order);
+            // 写入最新数据（write-through）
+            cacheManager.cacheWorkOrder(order);
+        }
 
         log.info("[缓存] 工单缓存已更新 id={} action={}", order.getId(), event.getAction());
     }

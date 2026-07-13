@@ -11,7 +11,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.entity.SysRole;
+import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
+import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.workorder.cache.WorkOrderCacheManager;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
@@ -80,17 +83,20 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     private final WorkOrderCacheManager cacheManager;
     private final WorkOrderTypeResolver typeResolver;
     private final SysRoleMapper roleMapper;
+    private final SysUserMapper userMapper;
 
     public WorkOrderServiceImpl(WorkOrderMapper mapper,
                                 ApplicationEventPublisher eventPublisher,
                                 WorkOrderCacheManager cacheManager,
                                 WorkOrderTypeResolver typeResolver,
-                                SysRoleMapper roleMapper) {
+                                SysRoleMapper roleMapper,
+                                SysUserMapper userMapper) {
         this.mapper = mapper;
         this.eventPublisher = eventPublisher;
         this.cacheManager = cacheManager;
         this.typeResolver = typeResolver;
         this.roleMapper = roleMapper;
+        this.userMapper = userMapper;
     }
 
     @Override
@@ -129,9 +135,15 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder create(WorkOrder workOrder) {
+        Long tenantId = TenantContext.requireTenantId();
         if (workOrder.getSubmitterId() == null) {
             throw new WorkOrderException("工单提交人不能为空");
         }
+        SysUser submitter = userMapper.selectById(workOrder.getSubmitterId());
+        if (submitter == null || !tenantId.equals(submitter.getTenantId())) {
+            throw new WorkOrderException("工单提交人不属于当前租户");
+        }
+        workOrder.setTenantId(tenantId);
         workOrder.setStatus(WorkOrderStatus.PENDING);
         if (workOrder.getType() == null) {
             workOrder.setType(typeResolver.resolve(workOrder.getTitle(), workOrder.getDescription()));
@@ -167,6 +179,10 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.PENDING);
 
         // 校验：只能派发给云仓侧人员（WAREHOUSE_ADMIN 角色）
+        SysUser assignee = userMapper.selectById(assigneeId);
+        if (assignee == null || !TenantContext.requireTenantId().equals(assignee.getTenantId())) {
+            throw new WorkOrderException("处理人不属于当前租户");
+        }
         List<String> assigneeRoles = roleMapper.selectRoleCodesByUserId(assigneeId);
         if (!assigneeRoles.contains("WAREHOUSE_ADMIN")) {
             throw new WorkOrderException("只能派发给云仓管理人员");
@@ -660,8 +676,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
      * @throws WorkOrderException 工单不存在或状态不匹配时
      */
     private WorkOrder loadAndValidate(Long workOrderId, WorkOrderStatus requiredStatus) {
+        Long tenantId = TenantContext.requireTenantId();
         WorkOrder order = mapper.selectById(workOrderId);
-        if (order == null) {
+        if (order == null || !tenantId.equals(order.getTenantId())) {
             throw new WorkOrderException("工单不存在: " + workOrderId);
         }
 

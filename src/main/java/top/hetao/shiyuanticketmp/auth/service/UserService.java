@@ -54,17 +54,21 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
      */
     @Transactional(readOnly = true)
     public SysUser getByUsernameIgnoreTenant(String username) {
-        return baseMapper.selectByUsernameIgnoreTenant(username);
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            return baseMapper.selectByUsernameIgnoreTenant(username);
+        }
     }
 
     @Transactional(readOnly = true)
     public SysUser getByIdIgnoreTenant(Long id) {
-        return baseMapper.selectByIdIgnoreTenant(id);
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            return baseMapper.selectByIdIgnoreTenant(id);
+        }
     }
 
     @Transactional(readOnly = true)
     public SysUser getByExternalUserIdIgnoreTenant(String externalUserId) {
-        return baseMapper.selectByExternalUserIdIgnoreTenant(externalUserId);
+        return selectByExternalUserIdAcrossTenants(externalUserId);
     }
 
     @Transactional(readOnly = true)
@@ -97,7 +101,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         }
         String extId = normalizeBlank(request.getExternalUserId());
         if (extId != null) {
-            SysUser existing = baseMapper.selectByExternalUserIdIgnoreTenant(extId);
+            SysUser existing = selectByExternalUserIdAcrossTenants(extId);
             if (existing != null) {
                 throw new WorkOrderException("外部用户ID已被其他用户绑定: " + extId);
             }
@@ -110,13 +114,11 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         user.setEmail(normalizeBlank(request.getEmail()));
         user.setExternalUserId(extId);
         user.setStatus(1);
-        // 租户 ID：优先使用请求指定的值，否则使用当前租户上下文
-        if (request.getTenantId() != null) {
-            user.setTenantId(request.getTenantId());
-        } else {
-            Long currentTenant = TenantContext.getTenantId();
-            user.setTenantId(currentTenant != null ? currentTenant : 0L);
+        Long currentTenant = TenantContext.requireTenantId();
+        if (request.getTenantId() != null && !currentTenant.equals(request.getTenantId())) {
+            throw new WorkOrderException("不能在当前租户上下文中创建其他租户用户");
         }
+        user.setTenantId(currentTenant);
         save(user);
         // 如果请求中包含角色 ID，分配角色
         if (request.getRoleIds() != null && !request.getRoleIds().isEmpty()) {
@@ -140,7 +142,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         if (request.getExternalUserId() != null) {
             newExtId = normalizeBlank(request.getExternalUserId());
             if (newExtId != null) {
-                SysUser existing = baseMapper.selectByExternalUserIdIgnoreTenant(newExtId);
+                SysUser existing = selectByExternalUserIdAcrossTenants(newExtId);
                 if (existing != null && !existing.getId().equals(userId)) {
                     throw new WorkOrderException("外部用户ID已被其他用户绑定: " + newExtId);
                 }
@@ -223,7 +225,7 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
             String rawExtId = (String) fields.get("externalUserId");
             String newExtId = normalizeBlank(rawExtId);
             if (newExtId != null) {
-                SysUser existing = baseMapper.selectByExternalUserIdIgnoreTenant(newExtId);
+                SysUser existing = selectByExternalUserIdAcrossTenants(newExtId);
                 if (existing != null && !existing.getId().equals(userId)) {
                     throw new WorkOrderException("外部用户ID已被其他用户绑定: " + newExtId);
                 }
@@ -239,8 +241,10 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
             } else if (tenantVal instanceof String s && !s.isBlank()) {
                 tenantId = Long.parseLong(s);
             }
-            wrapper.set(SysUser::getTenantId, tenantId);
-            hasWrapperUpdate = true;
+            Long currentTenant = TenantContext.requireTenantId();
+            if (tenantId == null || !currentTenant.equals(tenantId)) {
+                throw new WorkOrderException("不能将用户迁移到其他租户");
+            }
         }
 
         // 先用 updateById 更新 nickname / status
@@ -272,6 +276,9 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
                 .eq(SysUserRole::getUserId, userId));
         for (Long roleId : roleIds) {
+            if (roleId == null || roleMapper.selectById(roleId) == null) {
+                throw new WorkOrderException("角色不属于当前租户: " + roleId);
+            }
             SysUserRole ur = new SysUserRole();
             ur.setUserId(userId);
             ur.setRoleId(roleId);
@@ -281,6 +288,9 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     @Transactional(readOnly = true)
     public List<Long> getUserRoleIds(Long userId) {
+        if (getById(userId) == null) {
+            throw new WorkOrderException("用户不存在: " + userId);
+        }
         return userRoleMapper.selectRoleIdsByUserId(userId);
     }
 
@@ -303,5 +313,11 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     private static String normalizeBlank(String value) {
         return (value == null || value.isBlank()) ? null : value;
+    }
+
+    private SysUser selectByExternalUserIdAcrossTenants(String externalUserId) {
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            return baseMapper.selectByExternalUserIdIgnoreTenant(externalUserId);
+        }
     }
 }

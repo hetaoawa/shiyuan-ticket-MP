@@ -82,6 +82,9 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional(readOnly = true)
     public List<Long> getRolePermissionIds(Long roleId) {
+        if (getById(roleId) == null) {
+            throw new WorkOrderException("角色不存在: " + roleId);
+        }
         return rolePermissionMapper.selectPermissionIdsByRoleId(roleId);
     }
 

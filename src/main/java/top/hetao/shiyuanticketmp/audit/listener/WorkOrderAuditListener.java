@@ -8,6 +8,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.audit.entity.SysAuditLog;
 import top.hetao.shiyuanticketmp.audit.service.AuditLogService;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderStateChangedEvent;
 
@@ -51,6 +52,7 @@ public class WorkOrderAuditListener {
         auditLog.setAction(event.getAction());
         // operatorId 可能为 null（如系统自动操作），设置默认值 0
         auditLog.setOperatorId(event.getOperatorId() != null ? event.getOperatorId() : 0L);
+        auditLog.setTenantId(order.getTenantId());
 
         try {
             auditLog.setDetail(objectMapper.writeValueAsString(detail));
@@ -59,7 +61,9 @@ public class WorkOrderAuditListener {
         }
 
         try {
-            auditLogService.save(auditLog);
+            try (TenantContext.Scope ignored = TenantContext.useTenant(order.getTenantId())) {
+                auditLogService.save(auditLog);
+            }
             log.info("[审计] 记录成功 bizType=WORK_ORDER bizId={} action={}", order.getId(), event.getAction());
         } catch (Exception e) {
             log.error("[审计] 记录失败 bizId={} action={}", order.getId(), event.getAction(), e);

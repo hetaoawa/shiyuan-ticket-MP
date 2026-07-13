@@ -84,4 +84,8 @@ public class WorkOrder extends BaseEntity {
     /** 提交人用户昵称（由 Controller 层填充） */
     @TableField(exist = false)
     private String submitterName;
+
+    /** 所属租户名称（由服务/Controller 从权威租户主数据填充） */
+    @TableField(exist = false)
+    private String tenantName;
 }

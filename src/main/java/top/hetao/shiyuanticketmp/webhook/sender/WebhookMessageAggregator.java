@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -15,6 +16,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * WebHook 消息聚合器。
@@ -102,6 +105,27 @@ public class WebhookMessageAggregator {
         }
 
         log.info("[Aggregator] 开始刷新，批量投递 {} 条事件", batch.size());
+
+        Map<Long, List<WorkOrderEvent>> eventsByTenant = batch.stream()
+                .filter(e -> e.getTenantId() != null)
+                .collect(Collectors.groupingBy(WorkOrderEvent::getTenantId));
+        if (eventsByTenant.values().stream().mapToInt(List::size).sum() != batch.size()) {
+            log.error("[Aggregator] 丢弃缺少 tenantId 的事件 count={}",
+                    batch.size() - eventsByTenant.values().stream().mapToInt(List::size).sum());
+        }
+        eventsByTenant.forEach(this::dispatchTenantBatch);
+    }
+
+    private void dispatchTenantBatch(Long tenantId, List<WorkOrderEvent> batch) {
+        // 事件入队时已捕获所属租户。租户随后被停用只阻止新的业务请求，已排队的
+        // 外部通知仍按原租户投递并沿用各 dispatcher 的失败/死信处理语义。
+        log.debug("[Aggregator] 按入队租户继续投递 tenantId={} count={}", tenantId, batch.size());
+        try (TenantContext.Scope ignored = TenantContext.useTenant(tenantId)) {
+            dispatchScopedBatch(batch);
+        }
+    }
+
+    private void dispatchScopedBatch(List<WorkOrderEvent> batch) {
 
         // 按通道过滤
         List<WorkOrderEvent> dingTalkEvents = batch.stream()

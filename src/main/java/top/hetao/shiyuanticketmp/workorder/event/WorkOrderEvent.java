@@ -26,6 +26,9 @@ public class WorkOrderEvent {
     /** 工单主键 */
     private Long workOrderId;
 
+    /** 工单所属租户；异步/延迟线程据此恢复严格租户上下文。 */
+    private Long tenantId;
+
     /** 工单标题 */
     private String title;
 
@@ -71,6 +74,7 @@ public class WorkOrderEvent {
     public static WorkOrderEvent of(WorkOrder order, Map<String, Object> extra) {
         WorkOrderEvent e = new WorkOrderEvent();
         e.setWorkOrderId(order.getId());
+        e.setTenantId(order.getTenantId());
         e.setTitle(order.getTitle());
         e.setType(order.getType());
         e.setTrackingNo(order.getTrackingNo());

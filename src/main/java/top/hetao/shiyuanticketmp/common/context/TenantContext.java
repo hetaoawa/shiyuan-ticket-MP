@@ -9,16 +9,14 @@ package top.hetao.shiyuanticketmp.common.context;
  * <p><b>使用方式：</b>
  * <pre>
  * // 登录成功后设置
- * TenantContext.setTenantId(user.getTenantId());
- *
- * // 请求结束时清理（由拦截器自动完成）
- * TenantContext.clear();
+ * try (TenantContext.Scope ignored = TenantContext.useTenant(user.getTenantId())) {
+ *     // 执行限定租户内的业务
+ * }
  * </pre>
  */
 public final class TenantContext {
 
-    private static final ThreadLocal<Long> TENANT_ID = new ThreadLocal<>();
-    private static final ThreadLocal<Boolean> IS_ADMIN = new ThreadLocal<>();
+    private static final ThreadLocal<State> STATE = new ThreadLocal<>();
 
     private TenantContext() {}
 
@@ -28,35 +26,44 @@ public final class TenantContext {
      * @return 租户 ID，未设置时返回 null
      */
     public static Long getTenantId() {
-        return TENANT_ID.get();
+        State state = STATE.get();
+        return state == null ? null : state.tenantId();
     }
 
     /**
-     * 设置当前线程绑定的租户 ID。
-     *
-     * @param tenantId 租户 ID
+     * 获取当前线程绑定的租户 ID，缺失时立即失败，避免 SQL 静默落入平台租户。
      */
-    public static void setTenantId(Long tenantId) {
-        TENANT_ID.set(tenantId);
+    public static Long requireTenantId() {
+        Long tenantId = getTenantId();
+        if (tenantId == null) {
+            throw new IllegalStateException("当前线程未绑定租户");
+        }
+        return tenantId;
     }
 
     /**
-     * 获取当前线程是否为超管。
-     *
-     * @return 是否为超管，未设置时返回 false
+     * 在最小作用域内绑定租户；关闭作用域时恢复进入前的完整上下文。
      */
-    public static boolean isAdmin() {
-        Boolean admin = IS_ADMIN.get();
-        return admin != null && admin;
+    public static Scope useTenant(Long tenantId) {
+        validateTenantId(tenantId);
+        State previous = STATE.get();
+        STATE.set(new State(tenantId, false));
+        return new Scope(previous);
     }
 
     /**
-     * 设置当前线程是否为超管。
-     *
-     * @param admin 是否为超管
+     * 仅供基础设施内部跨租户任务使用，不与任何用户角色绑定。
      */
-    public static void setAdmin(boolean admin) {
-        IS_ADMIN.set(admin);
+    public static Scope useInternalBypass() {
+        State previous = STATE.get();
+        Long tenantId = previous == null ? null : previous.tenantId();
+        STATE.set(new State(tenantId, true));
+        return new Scope(previous);
+    }
+
+    public static boolean isInternalBypass() {
+        State state = STATE.get();
+        return state != null && state.internalBypass();
     }
 
     /**
@@ -64,7 +71,37 @@ public final class TenantContext {
      * 在请求结束或登出时必须调用，防止 ThreadLocal 泄漏。
      */
     public static void clear() {
-        TENANT_ID.remove();
-        IS_ADMIN.remove();
+        STATE.remove();
+    }
+
+    private static void validateTenantId(Long tenantId) {
+        if (tenantId == null || tenantId < 0) {
+            throw new IllegalArgumentException("租户 ID 必须为非负整数");
+        }
+    }
+
+    private record State(Long tenantId, boolean internalBypass) {
+    }
+
+    public static final class Scope implements AutoCloseable {
+        private final State previous;
+        private boolean closed;
+
+        private Scope(State previous) {
+            this.previous = previous;
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            if (previous == null) {
+                STATE.remove();
+            } else {
+                STATE.set(previous);
+            }
+        }
     }
 }

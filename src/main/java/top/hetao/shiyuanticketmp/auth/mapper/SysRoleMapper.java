@@ -18,6 +18,8 @@ public interface SysRoleMapper extends BaseMapper<SysRole> {
      */
     @Select("SELECT r.role_code FROM sys_role r " +
             "INNER JOIN sys_user_role ur ON ur.role_id = r.id " +
-            "WHERE ur.user_id = #{userId} AND r.deleted = 0")
+            "INNER JOIN sys_user u ON u.id = ur.user_id " +
+            "WHERE u.id = #{userId} AND u.deleted = 0 AND r.deleted = 0 " +
+            "AND r.tenant_id = u.tenant_id")
     List<String> selectRoleCodesByUserId(Long userId);
 }

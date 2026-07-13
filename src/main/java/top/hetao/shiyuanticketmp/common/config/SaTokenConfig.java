@@ -11,6 +11,7 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 
 import java.util.List;
 
@@ -27,6 +28,12 @@ import java.util.List;
 @Configuration
 public class SaTokenConfig implements WebMvcConfigurer {
 
+    private final TenantService tenantService;
+
+    public SaTokenConfig(TenantService tenantService) {
+        this.tenantService = tenantService;
+    }
+
     /** Sa-Token 登录校验排除路径 */
     private static final String[] AUTH_EXCLUDE_PATHS = {
             "/api/auth/**",
@@ -36,9 +43,10 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/favicon.ico"
     };
 
-    /** 租户上下文拦截器排除路径（仅排除登录，/api/auth/me 和 /api/auth/logout 需要租户上下文） */
+    /** 租户上下文拦截器排除路径（已停用租户的既有会话仍应能正常登出） */
     private static final String[] TENANT_EXCLUDE_PATHS = {
             "/api/auth/login",
+            "/api/auth/logout",
             "/api/webhook",
             "/api/webhook/**",
             "/error",
@@ -47,18 +55,19 @@ public class SaTokenConfig implements WebMvcConfigurer {
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // Sa-Token 登录校验拦截器
-        registry.addInterceptor(new SaInterceptor(handle -> {
-                    // checkLogin 会校验当前请求是否已登录
-                }))
-                .addPathPatterns("/**")
-                .excludePathPatterns(AUTH_EXCLUDE_PATHS);
-
-        // 租户上下文拦截器（在 Sa-Token 之后执行，确保已登录）
-        registry.addInterceptor(new TenantInterceptor())
+        // 必须先建立租户上下文，随后执行的鉴权注解及角色/权限查询才能受到租户隔离。
+        registry.addInterceptor(new TenantInterceptor(tenantService))
                 .addPathPatterns("/**")
                 .excludePathPatterns(TENANT_EXCLUDE_PATHS)
-                .order(1);
+                .order(-1);
+
+        // Sa-Token 登录校验拦截器
+        registry.addInterceptor(new SaInterceptor(handle -> {
+                    StpUtil.checkLogin();
+                }))
+                .addPathPatterns("/**")
+                .excludePathPatterns(AUTH_EXCLUDE_PATHS)
+                .order(0);
     }
 
     /**
@@ -68,21 +77,29 @@ public class SaTokenConfig implements WebMvcConfigurer {
      */
     public static class TenantInterceptor implements HandlerInterceptor {
 
+        private static final String SCOPE_ATTRIBUTE = TenantInterceptor.class.getName() + ".scope";
+        private final TenantService tenantService;
+
+        public TenantInterceptor(TenantService tenantService) {
+            this.tenantService = tenantService;
+        }
+
         @Override
         public boolean preHandle(HttpServletRequest request,
                                  HttpServletResponse response,
                                  Object handler) {
-            try {
-                Object tenantId = StpUtil.getSession().get("tenantId");
-                if (tenantId != null) {
-                    TenantContext.setTenantId(Long.parseLong(tenantId.toString()));
-                }
-                // 从 Session 读取登录时存入的超管标志，避免调用 getRoleList() 触发租户过滤的 SQL
-                Object isAdmin = StpUtil.getSession().get("isAdmin");
-                TenantContext.setAdmin(isAdmin instanceof Boolean && (Boolean) isAdmin);
-            } catch (Exception ignored) {
-                // 未登录时获取 session 会抛异常，忽略即可
+            TenantContext.clear();
+            if (!StpUtil.isLogin()) {
+                return true;
             }
+            Object tenantId = StpUtil.getSession().get("tenantId");
+            if (tenantId == null) {
+                throw new IllegalStateException("登录会话缺少当前租户");
+            }
+            Long activeTenantId = Long.parseLong(tenantId.toString());
+            tenantService.requireEnabled(activeTenantId);
+            TenantContext.Scope scope = TenantContext.useTenant(activeTenantId);
+            request.setAttribute(SCOPE_ATTRIBUTE, scope);
             return true;
         }
 
@@ -90,7 +107,12 @@ public class SaTokenConfig implements WebMvcConfigurer {
         public void afterCompletion(HttpServletRequest request,
                                     HttpServletResponse response,
                                     Object handler, Exception ex) {
-            TenantContext.clear();
+            Object scope = request.getAttribute(SCOPE_ATTRIBUTE);
+            if (scope instanceof TenantContext.Scope tenantScope) {
+                tenantScope.close();
+            } else {
+                TenantContext.clear();
+            }
         }
     }
 

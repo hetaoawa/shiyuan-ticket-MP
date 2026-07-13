@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.ChangePasswordRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.HashMap;
@@ -22,10 +23,14 @@ public class AuthController {
 
     private final UserService userService;
     private final PasswordEncoder passwordEncoder;
+    private final TenantService tenantService;
 
-    public AuthController(UserService userService, PasswordEncoder passwordEncoder) {
+    public AuthController(UserService userService,
+                          PasswordEncoder passwordEncoder,
+                          TenantService tenantService) {
         this.userService = userService;
         this.passwordEncoder = passwordEncoder;
+        this.tenantService = tenantService;
     }
 
     /**
@@ -51,13 +56,13 @@ public class AuthController {
             throw new WorkOrderException("账号已被禁用");
         }
 
+        tenantService.requireEnabled(user.getTenantId());
+
         // Sa-Token 登录，loginId 使用用户 ID
         StpUtil.login(user.getId());
 
-        // 将租户 ID 和超管标志写入 Sa-Token 会话
+        // 将当前业务租户写入 Sa-Token 会话；任何角色都不能据此绕过租户隔离。
         StpUtil.getSession().set("tenantId", user.getTenantId());
-        boolean isAdmin = userService.getRoleCodes(user.getId()).contains("SYSTEM_ADMIN");
-        StpUtil.getSession().set("isAdmin", isAdmin);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);

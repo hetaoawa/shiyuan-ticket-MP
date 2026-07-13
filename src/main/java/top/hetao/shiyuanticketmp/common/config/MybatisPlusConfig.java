@@ -14,8 +14,7 @@ import org.springframework.context.annotation.Configuration;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
 
 import java.time.LocalDateTime;
-import java.util.Arrays;
-import java.util.List;
+import java.util.Set;
 
 /**
  * MyBatis-Plus 全局配置。
@@ -33,14 +32,13 @@ import java.util.List;
 public class MybatisPlusConfig {
 
     /** 不需要租户隔离的表（全局表 + 无 tenant_id 列的关联表） */
-    private static final List<String> EXCLUDE_TABLES = Arrays.asList(
+    private static final Set<String> GLOBAL_TABLES = Set.of(
+            "sys_tenant",
             "sys_config",
             "sys_dict",
             "sys_permission",
             "sys_user_role",
             "sys_role_permission",
-            "sys_audit_log",
-            "work_order_comment",
             "express_trace"
     );
 
@@ -58,12 +56,7 @@ public class MybatisPlusConfig {
         interceptor.addInnerInterceptor(new TenantLineInnerInterceptor(new TenantLineHandler() {
             @Override
             public Expression getTenantId() {
-                // 超管角色绕过租户过滤
-                if (TenantContext.isAdmin()) {
-                    return null; // 返回 null 表示不过滤
-                }
-                Long tenantId = TenantContext.getTenantId();
-                return new LongValue(tenantId != null ? tenantId : 0L);
+                return new LongValue(TenantContext.requireTenantId());
             }
 
             @Override
@@ -73,11 +66,12 @@ public class MybatisPlusConfig {
 
             @Override
             public boolean ignoreTable(String tableName) {
-                // 超管跳过所有表的租户过滤
-                if (TenantContext.isAdmin()) {
+                if (TenantContext.isInternalBypass()) {
                     return true;
                 }
-                return EXCLUDE_TABLES.contains(tableName);
+                // express_trace 是按 tracking number 复用的全局承运商缓存；其 legacy tenant_id=0
+                // 仅用于兼容旧表结构，不是租户隔离边界。
+                return GLOBAL_TABLES.contains(tableName.toLowerCase());
             }
         }));
 

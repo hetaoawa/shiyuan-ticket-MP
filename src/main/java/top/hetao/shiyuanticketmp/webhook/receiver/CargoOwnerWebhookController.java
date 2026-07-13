@@ -15,6 +15,7 @@ import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 
 import java.util.Map;
 
@@ -40,17 +41,20 @@ public class CargoOwnerWebhookController {
     private final CargoOwnerSignVerifier signVerifier;
     private final AiParseService aiParseService;
     private final UserService userService;
+    private final TenantService tenantService;
 
     public CargoOwnerWebhookController(WorkOrderService workOrderService,
                                          ObjectMapper objectMapper,
                                          CargoOwnerSignVerifier signVerifier,
                                          AiParseService aiParseService,
-                                         UserService userService) {
+                                         UserService userService,
+                                         TenantService tenantService) {
         this.workOrderService = workOrderService;
         this.objectMapper = objectMapper;
         this.signVerifier = signVerifier;
         this.aiParseService = aiParseService;
         this.userService = userService;
+        this.tenantService = tenantService;
     }
 
     /**
@@ -110,6 +114,7 @@ public class CargoOwnerWebhookController {
                         "msg", "未找到外部用户ID对应的系统用户: " + senderStaffId
                 ));
             }
+            tenantService.requireEnabled(submitter.getTenantId());
 
             // 截断超长输入
             if (content.length() > MAX_CONTENT_LENGTH) {
@@ -149,12 +154,12 @@ public class CargoOwnerWebhookController {
             order.setConversationId(conversationId);
             order.setSenderStaffId(senderStaffId);
             order.setSubmitterId(submitter.getId());
-            // Webhook 无 Sa-Token session，TenantContext 未设置，租户拦截器默认注入 0
-            // 显式继承映射系统用户的租户 ID，确保工单落到正确租户
+            // Webhook 无 Sa-Token session，显式继承映射用户的租户并限制作用域。
             order.setTenantId(submitter.getTenantId());
-            TenantContext.setTenantId(submitter.getTenantId());
-
-            WorkOrder created = workOrderService.create(order);
+            WorkOrder created;
+            try (TenantContext.Scope ignored = TenantContext.useTenant(submitter.getTenantId())) {
+                created = workOrderService.create(order);
+            }
 
             log.info("[货主入站] 工单创建成功 orderId={} type={} trackingNo={}",
                     created.getId(), type, trackingNo);
