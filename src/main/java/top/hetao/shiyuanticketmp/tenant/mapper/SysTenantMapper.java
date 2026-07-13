@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.tenant.mapper;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
@@ -29,6 +30,7 @@ public interface SysTenantMapper extends BaseMapper<SysTenant> {
             WHERE id = #{tenantId} AND status = 1 AND deleted = 0
             LOCK IN SHARE MODE
             """)
+    @InterceptorIgnore(tenantLine = "true")
     SysTenant selectEnabledByIdForShare(@Param("tenantId") Long tenantId);
 
     /**
@@ -42,6 +44,7 @@ public interface SysTenantMapper extends BaseMapper<SysTenant> {
             WHERE id = #{tenantId} AND deleted = 0
             LOCK IN SHARE MODE
             """)
+    @InterceptorIgnore(tenantLine = "true")
     SysTenant selectNotDeletedByIdForShare(@Param("tenantId") Long tenantId);
 
     /**
