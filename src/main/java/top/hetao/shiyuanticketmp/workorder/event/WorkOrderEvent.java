@@ -29,6 +29,9 @@ public class WorkOrderEvent {
     /** 工单所属租户；异步/延迟线程据此恢复严格租户上下文。 */
     private Long tenantId;
 
+    /** 工单所属租户的稳定编码，用于构建跨租户详情链接。 */
+    private String tenantCode;
+
     /** 工单标题 */
     private String title;
 

@@ -86,6 +86,19 @@ public class TenantService {
         return tenant == null ? null : tenant.getTenantName();
     }
 
+    @Transactional(readOnly = true)
+    public String getTenantCode(Long tenantId) {
+        if (tenantId == null || tenantId < 0) {
+            return null;
+        }
+        SysTenant tenant = tenantMapper.selectById(tenantId);
+        if (tenant == null || Integer.valueOf(1).equals(tenant.getDeleted())
+                || tenant.getTenantCode() == null || tenant.getTenantCode().isBlank()) {
+            return null;
+        }
+        return tenant.getTenantCode();
+    }
+
     @Transactional
     public SysTenant createTenant(TenantRequest request) {
         ValidatedTenant validated = validate(request);

@@ -7,6 +7,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 import top.hetao.shiyuanticketmp.webhook.sender.ChannelTarget;
 import top.hetao.shiyuanticketmp.webhook.sender.WebhookMessageAggregator;
 import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
@@ -34,11 +35,14 @@ public class WorkOrderWebhookListener {
 
     private final WebhookMessageAggregator aggregator;
     private final TenantIntegrationSettingService integrationSettingService;
+    private final TenantService tenantService;
 
     public WorkOrderWebhookListener(WebhookMessageAggregator aggregator,
-                                    TenantIntegrationSettingService integrationSettingService) {
+                                    TenantIntegrationSettingService integrationSettingService,
+                                    TenantService tenantService) {
         this.aggregator = aggregator;
         this.integrationSettingService = integrationSettingService;
+        this.tenantService = tenantService;
     }
 
     /**
@@ -67,8 +71,10 @@ public class WorkOrderWebhookListener {
             return;
         }
 
+        String tenantCode = requireTenantCode(event.getTenantId());
         WorkOrderEvent payload = WorkOrderEvent.of(order, event.getExtra());
         payload.setTenantId(event.getTenantId());
+        payload.setTenantCode(tenantCode);
         payload.setTargetChannels(target);
 
         log.info("[WebHook] 事件入队聚合器 action={} orderId={} target={}", action, order.getId(), target);
@@ -100,10 +106,12 @@ public class WorkOrderWebhookListener {
             return;
         }
 
+        String tenantCode = requireTenantCode(event.getTenantId());
         WorkOrderEvent payload = new WorkOrderEvent();
         payload.setEventId(UUID.randomUUID().toString());
         payload.setWorkOrderId(order.getId());
         payload.setTenantId(event.getTenantId());
+        payload.setTenantCode(tenantCode);
         payload.setTitle(order.getTitle());
         payload.setType(order.getType());
         payload.setTrackingNo(order.getTrackingNo());
@@ -123,6 +131,15 @@ public class WorkOrderWebhookListener {
 
         log.info("[WebHook] 评论事件入队 orderId={} target=CARGO_OWNER", order.getId());
         aggregator.submit(payload);
+    }
+
+    private String requireTenantCode(Long tenantId) {
+        String tenantCode = tenantService.getTenantCode(tenantId);
+        if (tenantCode == null || tenantCode.isBlank()) {
+            throw new IllegalStateException(
+                    "Webhook work-order event requires tenantCode: tenantId=" + tenantId);
+        }
+        return tenantCode;
     }
 
     /**

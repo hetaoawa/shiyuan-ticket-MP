@@ -62,7 +62,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
         requireNonBlank(accessToken, "webhook.dingtalk.access-token");
         requireNonBlank(secret, "webhook.dingtalk.secret");
         validateHttpUrl(workOrderDetailBaseUrl,
-                "webhook.dingtalk.work-order-detail-base-url", true);
+                "webhook.dingtalk.work-order-detail-base-url", false);
         return buildSignedUrl();
     }
 
@@ -199,9 +199,11 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
             }
 
             // 处理链接
-            String detailUrl = normalizedDetailBaseUrlForMessage()
-                    + "/workorder/detail/" + e.getWorkOrderId();
-            sb.append("- **处理链接**：[查看详情](").append(detailUrl).append(")\n");
+            String detailUrl = WorkOrderDetailUrlBuilder.build(
+                    workOrderDetailBaseUrl, e.getWorkOrderId(), e.getTenantCode());
+            if (detailUrl != null) {
+                sb.append("- **处理链接**：[查看详情](").append(detailUrl).append(")\n");
+            }
             sb.append("\n");
         }
 
@@ -238,11 +240,6 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
 
     private String nvl(String s) {
         return s != null ? s : "";
-    }
-
-    private String normalizedDetailBaseUrlForMessage() {
-        String trimmed = workOrderDetailBaseUrl == null ? "" : workOrderDetailBaseUrl.trim();
-        return trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
     }
 
     private void requireNonBlank(String value, String property) {

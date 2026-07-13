@@ -203,9 +203,9 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             }
 
             // 处理链接
-            String detailBaseUrl = normalizedDetailBaseUrlForMessage();
-            if (detailBaseUrl != null) {
-                String detailUrl = detailBaseUrl + "/workorder/detail/" + e.getWorkOrderId();
+            String detailUrl = WorkOrderDetailUrlBuilder.build(
+                    workOrderDetailBaseUrl, e.getWorkOrderId(), e.getTenantCode());
+            if (detailUrl != null) {
                 sb.append("处理链接：").append(detailUrl).append("\n");
             }
         }
@@ -238,14 +238,6 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     private String nvl(String s) {
         return s != null ? s : "";
-    }
-
-    private String normalizedDetailBaseUrlForMessage() {
-        if (workOrderDetailBaseUrl == null || workOrderDetailBaseUrl.isBlank()) {
-            return null;
-        }
-        String trimmed = workOrderDetailBaseUrl.trim();
-        return trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
     }
 
     private void requireNonBlank(String value, String property) {
