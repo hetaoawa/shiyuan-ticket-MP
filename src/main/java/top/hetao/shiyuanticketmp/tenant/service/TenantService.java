@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.auth.service.RoleProvisioningService;
 import top.hetao.shiyuanticketmp.tenant.controller.dto.TenantRequest;
 import top.hetao.shiyuanticketmp.tenant.entity.SysTenant;
 import top.hetao.shiyuanticketmp.tenant.mapper.SysTenantMapper;
@@ -19,9 +20,11 @@ public class TenantService {
     private static final Pattern CODE_PATTERN = Pattern.compile("[a-z0-9][a-z0-9_-]{1,63}");
 
     private final SysTenantMapper tenantMapper;
+    private final RoleProvisioningService roleProvisioningService;
 
-    public TenantService(SysTenantMapper tenantMapper) {
+    public TenantService(SysTenantMapper tenantMapper, RoleProvisioningService roleProvisioningService) {
         this.tenantMapper = tenantMapper;
+        this.roleProvisioningService = roleProvisioningService;
     }
 
     @Transactional(readOnly = true)
@@ -40,6 +43,7 @@ public class TenantService {
     public List<SysTenant> listEnabled() {
         return tenantMapper.selectList(new LambdaQueryWrapper<SysTenant>()
                 .eq(SysTenant::getStatus, 1)
+                .ne(SysTenant::getId, 0L)
                 .orderByAsc(SysTenant::getTenantName));
     }
 
@@ -67,6 +71,7 @@ public class TenantService {
         tenant.setTenantName(validated.name());
         tenant.setStatus(validated.status());
         tenantMapper.insert(tenant);
+        roleProvisioningService.provisionTenantRoles(tenant.getId());
         return tenant;
     }
 

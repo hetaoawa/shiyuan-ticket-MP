@@ -601,7 +601,8 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         if (order == null || currentUserRoles == null || currentUserRoles.isEmpty()) {
             return false;
         }
-        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+        if (currentUserRoles.contains("SYSTEM_ADMIN")
+                || currentUserRoles.contains("GLOBAL_SYSTEM_ADMIN")) {
             return true;
         }
         boolean canAccess = false;
@@ -633,7 +634,8 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             wrapper.eq(WorkOrder::getSubmitterId, currentUserId);
             return;
         }
-        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+        if (currentUserRoles.contains("SYSTEM_ADMIN")
+                || currentUserRoles.contains("GLOBAL_SYSTEM_ADMIN")) {
             return; // 不加额外条件
         }
 

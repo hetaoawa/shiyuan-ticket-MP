@@ -12,9 +12,12 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.auth.controller.dto.AssignTenantAdminsRequest;
+import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.tenant.controller.dto.TenantRequest;
 import top.hetao.shiyuanticketmp.tenant.entity.SysTenant;
 import top.hetao.shiyuanticketmp.tenant.service.TenantService;
+import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -25,9 +28,11 @@ import java.util.Map;
 public class TenantController {
 
     private final TenantService tenantService;
+    private final UserService userService;
 
-    public TenantController(TenantService tenantService) {
+    public TenantController(TenantService tenantService, UserService userService) {
         this.tenantService = tenantService;
+        this.userService = userService;
     }
 
     @SaCheckLogin
@@ -70,6 +75,34 @@ public class TenantController {
         response.put("code", 200);
         response.put("message", "租户删除成功");
         return response;
+    }
+
+    @SaCheckLogin
+    @GetMapping("/{tenantId}/system-admins")
+    public Map<String, Object> getSystemAdmins(@PathVariable Long tenantId) {
+        requireCurrentTenantAdministrator(tenantId);
+        return success(userService.listTenantSystemAdmins(tenantId));
+    }
+
+    @SaCheckLogin
+    @PutMapping("/{tenantId}/system-admins")
+    public Map<String, Object> replaceSystemAdmins(@PathVariable Long tenantId,
+                                                   @RequestBody AssignTenantAdminsRequest request) {
+        requireCurrentTenantAdministrator(tenantId);
+        userService.replaceTenantSystemAdmins(tenantId, request == null ? null : request.getUserIds());
+        Map<String, Object> response = success(userService.listTenantSystemAdmins(tenantId));
+        response.put("message", "租户系统管理员设置成功");
+        return response;
+    }
+
+    private void requireCurrentTenantAdministrator(Long tenantId) {
+        Long activeTenantId = TenantContext.requireTenantId();
+        if (tenantId == null || tenantId <= 0 || !tenantId.equals(activeTenantId)) {
+            throw new WorkOrderException("只能管理当前活动租户的系统管理员");
+        }
+        if (!StpUtil.hasRole("GLOBAL_SYSTEM_ADMIN") && !StpUtil.hasRole("SYSTEM_ADMIN")) {
+            throw new WorkOrderException("无权设置租户系统管理员");
+        }
     }
 
     private Map<String, Object> success(Object data) {

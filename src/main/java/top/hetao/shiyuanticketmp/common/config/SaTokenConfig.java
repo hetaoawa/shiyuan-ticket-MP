@@ -12,6 +12,8 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.tenant.service.TenantService;
+import top.hetao.shiyuanticketmp.auth.service.AuthTenantService;
+import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.List;
 
@@ -36,7 +38,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
 
     /** Sa-Token 登录校验排除路径 */
     private static final String[] AUTH_EXCLUDE_PATHS = {
-            "/api/auth/**",
+            "/api/auth/login",
             "/api/webhook",
             "/api/webhook/**",
             "/error",
@@ -92,15 +94,28 @@ public class SaTokenConfig implements WebMvcConfigurer {
             if (!StpUtil.isLogin()) {
                 return true;
             }
-            Object tenantId = StpUtil.getSession().get("tenantId");
+            Object tenantId = StpUtil.getSession().get(AuthTenantService.ACTIVE_TENANT_ID);
             if (tenantId == null) {
-                throw new IllegalStateException("登录会话缺少当前租户");
+                if (isTenantNeutral(request.getRequestURI())) {
+                    return true;
+                }
+                throw new WorkOrderException("请先选择租户");
             }
             Long activeTenantId = Long.parseLong(tenantId.toString());
             tenantService.requireEnabled(activeTenantId);
             TenantContext.Scope scope = TenantContext.useTenant(activeTenantId);
             request.setAttribute(SCOPE_ATTRIBUTE, scope);
             return true;
+        }
+
+        private static boolean isTenantNeutral(String uri) {
+            if ("/api/auth/me".equals(uri) || "/api/auth/switch-tenant".equals(uri)) {
+                return true;
+            }
+            if ("/api/admin/tenants".equals(uri) || "/api/admin/tenants/options".equals(uri)) {
+                return true;
+            }
+            return uri != null && uri.matches("/api/admin/tenants/\\d+");
         }
 
         @Override

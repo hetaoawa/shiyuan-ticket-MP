@@ -18,8 +18,25 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
      * @param username 用户名
      * @return 用户实体，不存在时返回 null
      */
-    @Select("SELECT * FROM sys_user WHERE username = #{username} AND deleted = 0")
-    SysUser selectByUsernameIgnoreTenant(@Param("username") String username);
+    @Select("""
+            SELECT u.* FROM sys_user u
+            INNER JOIN sys_tenant t ON t.id = u.tenant_id
+            WHERE t.tenant_code = #{tenantCode}
+              AND t.status = 1 AND t.deleted = 0
+              AND u.username = #{username} AND u.deleted = 0
+            """)
+    SysUser selectByTenantCodeAndUsername(@Param("tenantCode") String tenantCode,
+                                          @Param("username") String username);
+
+    @Select("""
+            SELECT u.* FROM sys_user u
+            INNER JOIN sys_user_role ur ON ur.user_id = u.id
+            INNER JOIN sys_role r ON r.id = ur.role_id
+            WHERE u.tenant_id = #{tenantId} AND u.deleted = 0
+              AND r.tenant_id = #{tenantId} AND r.role_code = 'SYSTEM_ADMIN' AND r.deleted = 0
+            ORDER BY u.username
+            """)
+    java.util.List<SysUser> selectTenantSystemAdmins(@Param("tenantId") Long tenantId);
 
     /**
      * 根据 ID 查询用户（忽略租户过滤，用于已认证用户的 /me 接口）。

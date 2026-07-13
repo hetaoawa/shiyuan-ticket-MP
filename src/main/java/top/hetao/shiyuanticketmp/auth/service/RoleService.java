@@ -37,6 +37,9 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
         if (request.getRoleCode() == null || request.getRoleCode().isBlank()) {
             throw new WorkOrderException("角色编码不能为空");
         }
+        if (isReservedAdministratorRole(request.getRoleCode())) {
+            throw new WorkOrderException("SYSTEM_ADMIN和GLOBAL_SYSTEM_ADMIN是系统保留角色");
+        }
         long count = count(new LambdaQueryWrapper<SysRole>()
                 .eq(SysRole::getRoleCode, request.getRoleCode()));
         if (count > 0) {
@@ -55,6 +58,7 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
         }
+        assertMutableTenantRole(role);
         if (request.getRoleName() != null) {
             role.setRoleName(request.getRoleName());
         }
@@ -67,12 +71,16 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
         }
+        assertMutableTenantRole(role);
         if (permissionIds == null) {
             throw new WorkOrderException("权限ID列表不能为空，请使用空列表 [] 表示清空权限");
         }
         rolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>()
                 .eq(SysRolePermission::getRoleId, roleId));
         for (Long permissionId : permissionIds) {
+            if (permissionId == null || permissionMapper.selectById(permissionId) == null) {
+                throw new WorkOrderException("权限不存在: " + permissionId);
+            }
             SysRolePermission rp = new SysRolePermission();
             rp.setRoleId(roleId);
             rp.setPermissionId(permissionId);
@@ -92,5 +100,26 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
     public List<SysPermission> listAllPermissions() {
         return permissionMapper.selectList(
                 new LambdaQueryWrapper<SysPermission>().orderByAsc(SysPermission::getId));
+    }
+
+    @Transactional
+    public void deleteRole(Long roleId) {
+        SysRole role = getById(roleId);
+        if (role == null) {
+            throw new WorkOrderException("角色不存在: " + roleId);
+        }
+        assertMutableTenantRole(role);
+        removeById(roleId);
+    }
+
+    private static void assertMutableTenantRole(SysRole role) {
+        if (Long.valueOf(0L).equals(role.getTenantId())
+                || isReservedAdministratorRole(role.getRoleCode())) {
+            throw new WorkOrderException("系统管理员角色由租户管理员设置功能维护，不可直接修改");
+        }
+    }
+
+    private static boolean isReservedAdministratorRole(String roleCode) {
+        return "SYSTEM_ADMIN".equals(roleCode) || "GLOBAL_SYSTEM_ADMIN".equals(roleCode);
     }
 }

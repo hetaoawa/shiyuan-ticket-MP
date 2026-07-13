@@ -12,6 +12,7 @@ import top.hetao.shiyuanticketmp.auth.controller.dto.CreateUserRequest;
 import top.hetao.shiyuanticketmp.auth.controller.dto.UpdateUserRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.entity.SysUserRole;
+import top.hetao.shiyuanticketmp.auth.entity.SysRole;
 import top.hetao.shiyuanticketmp.auth.mapper.SysPermissionMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
@@ -19,6 +20,8 @@ import top.hetao.shiyuanticketmp.auth.mapper.SysUserRoleMapper;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -46,19 +49,6 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
                 .eq(SysUser::getUsername, username));
     }
 
-    /**
-     * 根据用户名查询用户（忽略租户过滤，用于登录）。
-     *
-     * @param username 用户名
-     * @return 用户实体，不存在时返回 null
-     */
-    @Transactional(readOnly = true)
-    public SysUser getByUsernameIgnoreTenant(String username) {
-        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
-            return baseMapper.selectByUsernameIgnoreTenant(username);
-        }
-    }
-
     @Transactional(readOnly = true)
     public SysUser getByIdIgnoreTenant(Long id) {
         try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
@@ -73,12 +63,21 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     @Transactional(readOnly = true)
     public List<String> getRoleCodes(Long userId) {
-        return roleMapper.selectRoleCodesByUserId(userId);
+        return getPrincipalRoleCodes(userId);
     }
 
     @Transactional(readOnly = true)
     public List<String> getPermissionCodes(Long userId) {
-        return permissionMapper.selectPermissionCodesByUserId(userId);
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            return permissionMapper.selectPermissionCodesByUserId(userId);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<String> getPrincipalRoleCodes(Long userId) {
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            return roleMapper.selectRoleCodesByUserId(userId);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -273,16 +272,79 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
         if (user == null) {
             throw new WorkOrderException("用户不存在: " + userId);
         }
-        userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
-                .eq(SysUserRole::getUserId, userId));
-        for (Long roleId : roleIds) {
-            if (roleId == null || roleMapper.selectById(roleId) == null) {
+        if (roleIds == null) {
+            throw new WorkOrderException("角色ID列表不能为空，请使用空列表表示清空角色");
+        }
+        SysRole systemAdminRole = roleMapper.selectOne(new LambdaQueryWrapper<SysRole>()
+                .eq(SysRole::getTenantId, user.getTenantId())
+                .eq(SysRole::getRoleCode, "SYSTEM_ADMIN"));
+        List<SysRole> validatedRoles = new ArrayList<>();
+        for (Long roleId : new LinkedHashSet<>(roleIds)) {
+            SysRole role = roleId == null ? null : roleMapper.selectById(roleId);
+            if (role == null || !user.getTenantId().equals(role.getTenantId())) {
                 throw new WorkOrderException("角色不属于当前租户: " + roleId);
             }
+            if ("SYSTEM_ADMIN".equals(role.getRoleCode())
+                    || "GLOBAL_SYSTEM_ADMIN".equals(role.getRoleCode())
+                    || Long.valueOf(0L).equals(role.getTenantId())) {
+                throw new WorkOrderException("系统管理员角色只能通过租户管理员设置功能分配");
+            }
+            validatedRoles.add(role);
+        }
+        LambdaQueryWrapper<SysUserRole> deleteAssignableRoles = new LambdaQueryWrapper<SysUserRole>()
+                .eq(SysUserRole::getUserId, userId);
+        if (systemAdminRole != null && user.getTenantId().equals(systemAdminRole.getTenantId())) {
+            deleteAssignableRoles.ne(SysUserRole::getRoleId, systemAdminRole.getId());
+        }
+        userRoleMapper.delete(deleteAssignableRoles);
+        for (SysRole role : validatedRoles) {
             SysUserRole ur = new SysUserRole();
             ur.setUserId(userId);
-            ur.setRoleId(roleId);
+            ur.setRoleId(role.getId());
             userRoleMapper.insert(ur);
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public List<SimpleUserDTO> listTenantSystemAdmins(Long tenantId) {
+        requireCurrentTenant(tenantId);
+        return baseMapper.selectTenantSystemAdmins(tenantId).stream().map(user -> {
+            SimpleUserDTO dto = new SimpleUserDTO();
+            dto.setId(user.getId());
+            dto.setUsername(user.getUsername());
+            dto.setNickname(user.getNickname());
+            return dto;
+        }).toList();
+    }
+
+    @Transactional
+    public void replaceTenantSystemAdmins(Long tenantId, List<Long> userIds) {
+        requireCurrentTenant(tenantId);
+        if (userIds == null) {
+            throw new WorkOrderException("用户ID列表不能为空，使用空列表表示清空租户系统管理员");
+        }
+        SysRole systemAdmin = roleMapper.selectOne(new LambdaQueryWrapper<SysRole>()
+                .eq(SysRole::getTenantId, tenantId)
+                .eq(SysRole::getRoleCode, "SYSTEM_ADMIN"));
+        if (systemAdmin == null || !tenantId.equals(systemAdmin.getTenantId())) {
+            throw new WorkOrderException("当前租户缺少SYSTEM_ADMIN角色");
+        }
+        List<SysUser> users = new ArrayList<>();
+        for (Long userId : new LinkedHashSet<>(userIds)) {
+            SysUser user = userId == null ? null : getById(userId);
+            if (user == null || !tenantId.equals(user.getTenantId()) || Long.valueOf(0L).equals(user.getTenantId())) {
+                throw new WorkOrderException("用户不属于当前租户: " + userId);
+            }
+            users.add(user);
+        }
+
+        userRoleMapper.delete(new LambdaQueryWrapper<SysUserRole>()
+                .eq(SysUserRole::getRoleId, systemAdmin.getId()));
+        for (SysUser user : users) {
+            SysUserRole relation = new SysUserRole();
+            relation.setUserId(user.getId());
+            relation.setRoleId(systemAdmin.getId());
+            userRoleMapper.insert(relation);
         }
     }
 
@@ -313,6 +375,13 @@ public class UserService extends ServiceImpl<SysUserMapper, SysUser> {
 
     private static String normalizeBlank(String value) {
         return (value == null || value.isBlank()) ? null : value;
+    }
+
+    private static void requireCurrentTenant(Long tenantId) {
+        Long current = TenantContext.requireTenantId();
+        if (tenantId == null || !tenantId.equals(current) || tenantId <= 0) {
+            throw new WorkOrderException("只能管理当前活动租户的系统管理员");
+        }
     }
 
     private SysUser selectByExternalUserIdAcrossTenants(String externalUserId) {
