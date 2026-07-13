@@ -39,6 +39,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
     /** Sa-Token 登录校验排除路径 */
     private static final String[] AUTH_EXCLUDE_PATHS = {
             "/api/auth/login",
+            "/api/auth/tenant-options",
             "/api/webhook",
             "/api/webhook/cargo-owner",
             "/error",
@@ -48,6 +49,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
     /** 租户上下文拦截器排除路径（已停用租户的既有会话仍应能正常登出） */
     private static final String[] TENANT_EXCLUDE_PATHS = {
             "/api/auth/login",
+            "/api/auth/tenant-options",
             "/api/auth/logout",
             "/api/webhook",
             "/api/webhook/cargo-owner",

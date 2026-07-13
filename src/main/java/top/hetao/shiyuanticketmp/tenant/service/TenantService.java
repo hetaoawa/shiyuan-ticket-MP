@@ -4,12 +4,14 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.auth.controller.dto.TenantOptionResponse;
 import top.hetao.shiyuanticketmp.auth.service.RoleProvisioningService;
 import top.hetao.shiyuanticketmp.tenant.controller.dto.TenantRequest;
 import top.hetao.shiyuanticketmp.tenant.entity.SysTenant;
 import top.hetao.shiyuanticketmp.tenant.mapper.SysTenantMapper;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
@@ -49,6 +51,24 @@ public class TenantService {
                 .eq(SysTenant::getStatus, 1)
                 .ne(SysTenant::getId, 0L)
                 .orderByAsc(SysTenant::getTenantName));
+    }
+
+    @Transactional(readOnly = true)
+    public List<TenantOptionResponse> listLoginOptions() {
+        Comparator<TenantOptionResponse> loginOrder = Comparator
+                .comparingInt((TenantOptionResponse option) ->
+                        "platform".equals(option.tenantCode()) ? 0 : 1)
+                .thenComparing(TenantOptionResponse::tenantName)
+                .thenComparing(TenantOptionResponse::tenantCode);
+        return tenantMapper.selectList(new LambdaQueryWrapper<SysTenant>()
+                        .eq(SysTenant::getStatus, 1))
+                .stream()
+                .filter(tenant -> Integer.valueOf(1).equals(tenant.getStatus()))
+                .filter(tenant -> Integer.valueOf(0).equals(tenant.getDeleted()))
+                .map(tenant -> new TenantOptionResponse(
+                        tenant.getTenantCode(), tenant.getTenantName()))
+                .sorted(loginOrder)
+                .toList();
     }
 
     @Transactional(readOnly = true)
