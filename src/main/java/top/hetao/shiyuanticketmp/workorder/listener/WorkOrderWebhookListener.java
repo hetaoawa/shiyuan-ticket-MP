@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import top.hetao.shiyuanticketmp.webhook.sender.ChannelTarget;
 import top.hetao.shiyuanticketmp.webhook.sender.WebhookMessageAggregator;
+import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderCommentEvent;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
@@ -30,9 +31,12 @@ public class WorkOrderWebhookListener {
     private static final Logger log = LoggerFactory.getLogger(WorkOrderWebhookListener.class);
 
     private final WebhookMessageAggregator aggregator;
+    private final TenantIntegrationSettingService integrationSettingService;
 
-    public WorkOrderWebhookListener(WebhookMessageAggregator aggregator) {
+    public WorkOrderWebhookListener(WebhookMessageAggregator aggregator,
+                                    TenantIntegrationSettingService integrationSettingService) {
         this.aggregator = aggregator;
+        this.integrationSettingService = integrationSettingService;
     }
 
     /**
@@ -47,6 +51,11 @@ public class WorkOrderWebhookListener {
         ChannelTarget target = resolveChannelTarget(action, order);
         if (target == null) {
             log.debug("[WebHook] 事件无需推送 action={} orderId={}", action, order.getId());
+            return;
+        }
+        if (!isChannelEnabled(action, target, order)) {
+            log.info("[WebHook] 租户外部通道已关闭 action={} orderId={} tenantId={} target={}",
+                    action, order.getId(), order.getTenantId(), target);
             return;
         }
 
@@ -129,5 +138,17 @@ public class WorkOrderWebhookListener {
             // REJECT、RESUBMIT、FORCE_REJECT 不推送
             default -> null;
         };
+    }
+
+    private boolean isChannelEnabled(String action, ChannelTarget target, WorkOrder order) {
+        if ("ASSIGN".equals(action) && target == ChannelTarget.DINGTALK) {
+            return integrationSettingService.dingTalkPushEnabled(order.getTenantId());
+        }
+        if ("CLOSE".equals(action) && target == ChannelTarget.CARGO_OWNER) {
+            return integrationSettingService.externalCloseCallbackEnabled(order.getTenantId());
+        }
+        // CREATE and comments intentionally keep their existing behavior. The inbound switch
+        // is evaluated before creation, and the close switch only controls completion callbacks.
+        return true;
     }
 }

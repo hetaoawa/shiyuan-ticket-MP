@@ -8,7 +8,6 @@ import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 
-import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -39,82 +38,21 @@ import java.util.UUID;
 @Component
 public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
-    @Value("${webhook.cargo-owner.url}")
+    public static final String CHANNEL_CODE = "CARGO_OWNER";
+
+    @Value("${webhook.cargo-owner.url:}")
     private String targetUrl;
 
-    @Value("${webhook.cargo-owner.authorization}")
+    @Value("${webhook.cargo-owner.authorization:}")
     private String authorization;
 
     @Value("${webhook.cargo-owner.work-order-detail-base-url:}")
     private String workOrderDetailBaseUrl;
 
     private String normalizedUrl;
-    private String normalizedDetailBaseUrl;
 
     public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
         super(objectMapper, deadLetterService);
-    }
-
-    @PostConstruct
-    void init() {
-        if (targetUrl == null || targetUrl.isBlank()) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 未配置或为空");
-        }
-        String trimmed = targetUrl.trim();
-        if (trimmed.startsWith("\"") || trimmed.startsWith("'")
-                || trimmed.endsWith("\"") || trimmed.endsWith("'")) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 不应包含引号，当前值: " + targetUrl);
-        }
-        URI uri;
-        try {
-            uri = URI.create(trimmed);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 格式非法: " + targetUrl, e);
-        }
-        String scheme = uri.getScheme();
-        if (scheme == null) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少协议（scheme），当前值: " + targetUrl);
-        }
-        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 协议必须为 http/https，当前值: " + targetUrl);
-        }
-        if (uri.getHost() == null || uri.getHost().isBlank()) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少主机名（host），当前值: " + targetUrl);
-        }
-        normalizedUrl = trimmed;
-        log.info("[CargoOwner] 货主 WebHook URL 已校验: {}", normalizedUrl);
-
-        // 初始化详情链接 base URL（可选，不配置则不发送处理链接）
-        if (workOrderDetailBaseUrl != null && !workOrderDetailBaseUrl.isBlank()) {
-            String detailTrimmed = workOrderDetailBaseUrl.trim();
-            if (detailTrimmed.startsWith("\"") || detailTrimmed.startsWith("'")
-                    || detailTrimmed.endsWith("\"") || detailTrimmed.endsWith("'")) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 不应包含引号，当前值: " + workOrderDetailBaseUrl);
-            }
-            URI detailUri;
-            try {
-                detailUri = URI.create(detailTrimmed);
-            } catch (IllegalArgumentException e) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 格式非法: " + workOrderDetailBaseUrl, e);
-            }
-            String detailScheme = detailUri.getScheme();
-            if (detailScheme == null) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 缺少协议（scheme），当前值: " + workOrderDetailBaseUrl);
-            }
-            if (!"http".equalsIgnoreCase(detailScheme) && !"https".equalsIgnoreCase(detailScheme)) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 协议必须为 http/https，当前值: " + workOrderDetailBaseUrl);
-            }
-            if (detailUri.getHost() == null || detailUri.getHost().isBlank()) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 缺少主机名（host），当前值: " + workOrderDetailBaseUrl);
-            }
-            normalizedDetailBaseUrl = detailTrimmed.endsWith("/")
-                    ? detailTrimmed.substring(0, detailTrimmed.length() - 1)
-                    : detailTrimmed;
-            log.info("[CargoOwner] 工单详情 base URL 已校验: {}", normalizedDetailBaseUrl);
-        } else {
-            normalizedDetailBaseUrl = null;
-            log.info("[CargoOwner] 未配置工单详情 base URL，消息中不包含处理链接");
-        }
     }
 
     @Override
@@ -123,7 +61,16 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     }
 
     @Override
+    protected String channelCode() {
+        return CHANNEL_CODE;
+    }
+
+    @Override
     protected String buildRequestUrl() {
+        requireNonBlank(authorization, "webhook.cargo-owner.authorization");
+        normalizedUrl = validateHttpUrl(targetUrl, "webhook.cargo-owner.url", true);
+        validateHttpUrl(workOrderDetailBaseUrl,
+                "webhook.cargo-owner.work-order-detail-base-url", false);
         return normalizedUrl;
     }
 
@@ -252,8 +199,9 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             }
 
             // 处理链接
-            if (normalizedDetailBaseUrl != null) {
-                String detailUrl = normalizedDetailBaseUrl + "/workorder/detail/" + e.getWorkOrderId();
+            String detailBaseUrl = normalizedDetailBaseUrlForMessage();
+            if (detailBaseUrl != null) {
+                String detailUrl = detailBaseUrl + "/workorder/detail/" + e.getWorkOrderId();
                 sb.append("处理链接：").append(detailUrl).append("\n");
             }
         }
@@ -286,5 +234,46 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     private String nvl(String s) {
         return s != null ? s : "";
+    }
+
+    private String normalizedDetailBaseUrlForMessage() {
+        if (workOrderDetailBaseUrl == null || workOrderDetailBaseUrl.isBlank()) {
+            return null;
+        }
+        String trimmed = workOrderDetailBaseUrl.trim();
+        return trimmed.endsWith("/") ? trimmed.substring(0, trimmed.length() - 1) : trimmed;
+    }
+
+    private void requireNonBlank(String value, String property) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 未配置或为空");
+        }
+    }
+
+    private String validateHttpUrl(String value, String property, boolean required) {
+        if (value == null || value.isBlank()) {
+            if (required) {
+                throw new IllegalArgumentException("[CargoOwner] " + property + " 未配置或为空");
+            }
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.startsWith("\"") || trimmed.startsWith("'")
+                || trimmed.endsWith("\"") || trimmed.endsWith("'")) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 不应包含引号");
+        }
+        URI uri;
+        try {
+            uri = URI.create(trimmed);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 格式非法", e);
+        }
+        if ((uri.getScheme() == null
+                || (!"http".equalsIgnoreCase(uri.getScheme())
+                && !"https".equalsIgnoreCase(uri.getScheme())))
+                || uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 必须是完整 http/https URL");
+        }
+        return trimmed;
     }
 }

@@ -2,6 +2,8 @@ package top.hetao.shiyuanticketmp.webhook.deadletter;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * 死信记录 Mapper，继承 MyBatis-Plus BaseMapper 获得通用 CRUD 能力。
@@ -11,4 +13,18 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface WebhookDeadLetterMapper extends BaseMapper<WebhookDeadLetterRecord> {
+
+    /**
+     * Locks one tenant-visible, non-deleted row for the surrounding transaction.
+     * The normal MyBatis tenant interceptor injects tenant_id; this method deliberately
+     * has no interceptor bypass.
+     */
+    @Select("""
+            SELECT *
+            FROM webhook_dead_letter
+            WHERE id = #{id}
+              AND deleted = 0
+            FOR UPDATE
+            """)
+    WebhookDeadLetterRecord selectByIdForUpdate(@Param("id") Long id);
 }

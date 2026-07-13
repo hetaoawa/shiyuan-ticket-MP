@@ -5,13 +5,17 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Lazy;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
-import top.hetao.shiyuanticketmp.webhook.WebhookDispatcher;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.webhook.deadletter.enums.DeadLetterStatus;
+import top.hetao.shiyuanticketmp.webhook.sender.CargoOwnerDispatcher;
+import top.hetao.shiyuanticketmp.webhook.sender.DingTalkDispatcher;
+import top.hetao.shiyuanticketmp.webhook.sender.DispatchResult;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -32,16 +36,15 @@ public class WebhookDeadLetterService {
 
     private final WebhookDeadLetterMapper mapper;
 
-    /**
-     * 补偿投递时复用 Dispatcher，避免重复实现 HTTP + 重试逻辑。
-     * 使用字段注入避免与 WebhookDispatcher 构造器形成循环依赖。
-     */
-    private final top.hetao.shiyuanticketmp.webhook.WebhookDispatcher dispatcher;
+    private final ObjectProvider<DingTalkDispatcher> dingTalkDispatcherProvider;
+    private final ObjectProvider<CargoOwnerDispatcher> cargoOwnerDispatcherProvider;
 
     public WebhookDeadLetterService(WebhookDeadLetterMapper mapper,
-                                    @Lazy WebhookDispatcher dispatcher) {
-        this.mapper     = mapper;
-        this.dispatcher = dispatcher;
+                                    ObjectProvider<DingTalkDispatcher> dingTalkDispatcherProvider,
+                                    ObjectProvider<CargoOwnerDispatcher> cargoOwnerDispatcherProvider) {
+        this.mapper = mapper;
+        this.dingTalkDispatcherProvider = dingTalkDispatcherProvider;
+        this.cargoOwnerDispatcherProvider = cargoOwnerDispatcherProvider;
     }
 
     // ----------------------------------------------------------------
@@ -101,10 +104,10 @@ public class WebhookDeadLetterService {
      * 若上次实际已送达（网络超时导致误判失败），接收方将因 {@code eventId} 重复而幂等忽略，
      * 不会产生重复处理。
      *
-     * <p>补偿投递结果：
+     * <p>补偿投递是同步的，并按死信记录中的稳定通道代码使用当前通道配置：
      * <ul>
      *   <li>投递成功 → {@link WebhookDeadLetterRecord#markResolved} → 更新数据库状态</li>
-     *   <li>投递再次失败 → 由 Dispatcher 内部重试，全量失败后重新写入新死信记录</li>
+     *   <li>投递再次失败 → 保持 PENDING，不生成重复死信记录</li>
      * </ul>
      *
      * @param deadLetterId 死信记录主键
@@ -112,7 +115,7 @@ public class WebhookDeadLetterService {
      */
     @Transactional
     public void retry(Long deadLetterId, String operator) {
-        WebhookDeadLetterRecord record = mapper.selectById(deadLetterId);
+        WebhookDeadLetterRecord record = mapper.selectByIdForUpdate(deadLetterId);
         if (record == null) {
             throw new IllegalArgumentException("死信记录不存在: " + deadLetterId);
         }
@@ -124,17 +127,34 @@ public class WebhookDeadLetterService {
         log.info("[死信] 管理员 {} 触发手动补偿 eventId={} eventType={}",
                 operator, record.getEventId(), record.getEventType());
 
-        // 保持原 eventId，原始 payload 字节直接重投，跳过序列化
-        dispatcher.dispatchRaw(
-                record.getTargetUrl(),
-                record.getEventType(),
-                record.getEventId(),   // ← 保持原 eventId 不变，接收方幂等
-                record.getPayload().getBytes(java.nio.charset.StandardCharsets.UTF_8),
-                record.getTenantId()
-        );
+        DispatchResult result = retryThroughRecordedChannel(record);
+        if (!result.success()) {
+            log.warn("[死信] 重投失败，保持 PENDING eventId={} channel={} status={} error={}",
+                    record.getEventId(), record.getChannel(), result.statusCode(), result.message());
+            throw new IllegalStateException("死信重投失败: " + result.message());
+        }
 
         record.markResolved(operator);
         mapper.updateById(record);
+        log.info("[死信] 重投成功并标记 RESOLVED eventId={} channel={} status={}",
+                record.getEventId(), record.getChannel(), result.statusCode());
+    }
+
+    private DispatchResult retryThroughRecordedChannel(WebhookDeadLetterRecord record) {
+        String channel = record.getChannel();
+        if (channel == null || channel.isBlank()) {
+            throw new IllegalStateException("历史死信缺少投递通道，无法安全重试");
+        }
+        byte[] payload = record.getPayload().getBytes(StandardCharsets.UTF_8);
+        try (TenantContext.Scope ignored = TenantContext.useTenant(record.getTenantId())) {
+            return switch (channel) {
+                case DingTalkDispatcher.CHANNEL_CODE -> dingTalkDispatcherProvider.getObject()
+                        .retryRaw(record.getEventType(), record.getEventId(), payload);
+                case CargoOwnerDispatcher.CHANNEL_CODE -> cargoOwnerDispatcherProvider.getObject()
+                        .retryRaw(record.getEventType(), record.getEventId(), payload);
+                default -> throw new IllegalStateException("未知死信投递通道: " + channel);
+            };
+        }
     }
 
     /**

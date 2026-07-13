@@ -16,6 +16,7 @@ import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
 import top.hetao.shiyuanticketmp.tenant.service.TenantService;
+import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
 
 import java.util.Map;
 
@@ -42,19 +43,22 @@ public class CargoOwnerWebhookController {
     private final AiParseService aiParseService;
     private final UserService userService;
     private final TenantService tenantService;
+    private final TenantIntegrationSettingService integrationSettingService;
 
     public CargoOwnerWebhookController(WorkOrderService workOrderService,
                                          ObjectMapper objectMapper,
                                          CargoOwnerSignVerifier signVerifier,
                                          AiParseService aiParseService,
                                          UserService userService,
-                                         TenantService tenantService) {
+                                         TenantService tenantService,
+                                         TenantIntegrationSettingService integrationSettingService) {
         this.workOrderService = workOrderService;
         this.objectMapper = objectMapper;
         this.signVerifier = signVerifier;
         this.aiParseService = aiParseService;
         this.userService = userService;
         this.tenantService = tenantService;
+        this.integrationSettingService = integrationSettingService;
     }
 
     /**
@@ -115,6 +119,13 @@ public class CargoOwnerWebhookController {
                 ));
             }
             tenantService.requireEnabled(submitter.getTenantId());
+            if (!integrationSettingService.externalInboundEnabled(submitter.getTenantId())) {
+                log.info("[货主入站] 租户已关闭外部工单递交 tenantId={}", submitter.getTenantId());
+                return ResponseEntity.status(503).body(Map.of(
+                        "code", 503,
+                        "message", "当前租户已暂停外部工单递交"
+                ));
+            }
 
             // 截断超长输入
             if (content.length() > MAX_CONTENT_LENGTH) {
