@@ -1,6 +1,7 @@
 package top.hetao.shiyuanticketmp.platform.ssl.crypto;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.context.annotation.AnnotationConfigApplicationContext;
 import org.springframework.mock.env.MockEnvironment;
 
 import javax.crypto.AEADBadTagException;
@@ -11,6 +12,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PlatformKeyEncryptionTest {
+
+    @Test
+    void springSelectsTheEnvironmentConstructorWhenTestConstructorAlsoExists() {
+        try (AnnotationConfigApplicationContext context = new AnnotationConfigApplicationContext()) {
+            context.register(PlatformKeyEncryption.class);
+            context.refresh();
+
+            assertThat(context.getBean(PlatformKeyEncryption.class)).isNotNull();
+        }
+    }
 
     @Test
     void roundTripsWithAesGcmAndRejectsTampering() {

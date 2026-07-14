@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.platform.ssl.crypto;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,7 @@ public class PlatformKeyEncryption {
     private final Environment environment;
     private final SecureRandom secureRandom;
 
+    @Autowired
     public PlatformKeyEncryption(Environment environment) {
         this(environment, new SecureRandom());
     }
