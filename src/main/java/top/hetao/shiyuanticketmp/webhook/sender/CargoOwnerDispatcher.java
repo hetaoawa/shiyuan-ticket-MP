@@ -72,10 +72,10 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     @Override
     protected String buildRequestUrl() {
         if (integrationResolver != null) loadConfig(TenantContext.requireTenantId());
-        requireNonBlank(authorization, "webhook.cargo-owner.authorization");
-        normalizedUrl = validateHttpUrl(targetUrl, "webhook.cargo-owner.url", true);
+        requireNonBlank(authorization, "租户货主接口集成的 authorization");
+        normalizedUrl = validateHttpUrl(targetUrl, "租户货主接口集成的推送地址", true);
         validateHttpUrl(workOrderDetailBaseUrl,
-                "webhook.cargo-owner.work-order-detail-base-url", false);
+                "租户货主接口集成的工单详情地址", false);
         return normalizedUrl;
     }
 

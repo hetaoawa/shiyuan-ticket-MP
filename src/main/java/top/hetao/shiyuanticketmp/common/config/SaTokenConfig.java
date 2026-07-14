@@ -40,7 +40,6 @@ public class SaTokenConfig implements WebMvcConfigurer {
     private static final String[] AUTH_EXCLUDE_PATHS = {
             "/api/auth/login",
             "/api/auth/tenant-options",
-            "/api/webhook",
             "/api/webhook/cargo-owner",
             "/api/platform/ssl/deploy/import",
             "/error",
@@ -52,7 +51,6 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/api/auth/login",
             "/api/auth/tenant-options",
             "/api/auth/logout",
-            "/api/webhook",
             "/api/webhook/cargo-owner",
             "/api/platform/ssl/deploy/import",
             "/error",

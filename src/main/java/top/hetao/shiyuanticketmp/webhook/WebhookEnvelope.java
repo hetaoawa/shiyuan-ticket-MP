@@ -18,7 +18,7 @@ import java.time.Instant;
  * </pre>
  *
  * <p><b>event_id 一致性保证：</b>
- * {@code eventId} 由 {@link WebhookDispatcher} 在入口处统一生成，
+ * {@code eventId} 由投递端在入口处统一生成，
  * 同步写入 HTTP 请求头（{@code X-Event-Id}）与本信封的 {@code eventId} 字段，
  * 两处值恒相等，接收方可任选一处读取用于幂等去重。
  */
@@ -44,7 +44,7 @@ public class WebhookEnvelope {
     }
 
     /**
-     * 工厂方法，由 {@link WebhookDispatcher} 调用，统一创建信封对象。
+     * 工厂方法，由投递端调用，统一创建信封对象。
      *
      * @param eventId   调用方已生成的唯一 ID，将同步写入请求头
      * @param eventType 事件类型标识

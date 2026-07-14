@@ -24,8 +24,7 @@ import java.util.List;
  *
  * <p>提供三类能力：
  * <ol>
- *   <li><b>写入</b>：由 {@link top.hetao.shiyuanticketmp.webhook.WebhookDispatcher}
- *       在全量重试耗尽后调用 {@link #save} 落库</li>
+ *   <li><b>写入</b>：由钉钉或货主接口调度器在重试耗尽后调用 {@link #save} 落库</li>
  *   <li><b>查询</b>：管理后台 Controller 调用 {@link #listPending} 分页展示待处理死信</li>
  *   <li><b>补偿</b>：管理员触发 {@link #retry} 手动重新投递；或 {@link #ignore} 忽略</li>
  * </ol>

@@ -20,8 +20,7 @@ import java.nio.charset.StandardCharsets;
  *   <li>本系统：sign → Base64 解码 → RSA 私钥解密 → 得到摘要 → 与本端 MD5(body) 比对</li>
  * </ol>
  *
- * <p>私钥为 PEM 格式（PKCS#8），配置在 {@code webhook.cargo-owner.receive.private-key} 中。
- * 环境变量值为 PEM 内容的 Base64 编码（双重编码），解析时自动处理。
+ * <p>私钥为 PEM 格式（PKCS#8），在当前租户的货主接口集成页面中配置。
  */
 @Component
 public class CargoOwnerSignVerifier {
@@ -80,7 +79,7 @@ public class CargoOwnerSignVerifier {
 
         // 3. 校验私钥已配置
         if (privateKeyPem == null || privateKeyPem.isBlank()) {
-            log.error("[货主验签] 私钥未配置，请设置 webhook.cargo-owner.private-key");
+            log.error("[货主验签] 私钥未配置，请在当前租户的货主接口集成中配置验签私钥");
             return "服务端验签配置错误";
         }
 

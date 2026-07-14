@@ -64,10 +64,10 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
     @Override
     protected String buildRequestUrl() {
         if (integrationResolver != null) loadConfig(TenantContext.requireTenantId());
-        requireNonBlank(accessToken, "webhook.dingtalk.access-token");
-        requireNonBlank(secret, "webhook.dingtalk.secret");
+        requireNonBlank(accessToken, "租户钉钉集成的 accessToken");
+        requireNonBlank(secret, "租户钉钉集成的 secret");
         validateHttpUrl(workOrderDetailBaseUrl,
-                "webhook.dingtalk.work-order-detail-base-url", false);
+                "租户钉钉集成的工单详情地址", false);
         return buildSignedUrl();
     }
 
