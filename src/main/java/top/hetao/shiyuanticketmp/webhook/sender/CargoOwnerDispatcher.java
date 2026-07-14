@@ -2,11 +2,14 @@ package top.hetao.shiyuanticketmp.webhook.sender;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 import java.net.URI;
 import java.net.http.HttpRequest;
@@ -40,19 +43,20 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     public static final String CHANNEL_CODE = "CARGO_OWNER";
 
-    @Value("${webhook.cargo-owner.url:}")
     private String targetUrl;
 
-    @Value("${webhook.cargo-owner.authorization:}")
     private String authorization;
 
-    @Value("${webhook.cargo-owner.work-order-detail-base-url:}")
     private String workOrderDetailBaseUrl;
+    private final TenantIntegrationResolver integrationResolver;
 
     private String normalizedUrl;
 
-    public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+    @Autowired
+    public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService,
+                                TenantIntegrationResolver integrationResolver) {
         super(objectMapper, deadLetterService);
+        this.integrationResolver = integrationResolver;
     }
 
     @Override
@@ -67,6 +71,7 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     @Override
     protected String buildRequestUrl() {
+        if (integrationResolver != null) loadConfig(TenantContext.requireTenantId());
         requireNonBlank(authorization, "webhook.cargo-owner.authorization");
         normalizedUrl = validateHttpUrl(targetUrl, "webhook.cargo-owner.url", true);
         validateHttpUrl(workOrderDetailBaseUrl,
@@ -77,6 +82,7 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     @Override
     protected byte[] buildRequestBody(String eventId, String eventType,
                                        Object payload) throws Exception {
+        if (payload instanceof WorkOrderEvent event) loadConfig(event.getTenantId());
         String message = formatSingleText(eventType, payload);
         Map<String, Object> body = buildMessageBody(message, null, null);
         return objectMapper.writeValueAsBytes(body);
@@ -119,7 +125,7 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
      * <p>取该批次稳定的 conversationId/senderStaffId 作为 room_id/senderStaffId。
      * 聚合器按租户、群和接收人隔离批次，因此这里不会混合不同外部接收目标。
      */
-    public void dispatchBatch(List<WorkOrderEvent> events) {
+    public synchronized void dispatchBatch(List<WorkOrderEvent> events) {
         if (events == null || events.isEmpty()) return;
 
         String eventId = UUID.randomUUID().toString();
@@ -137,6 +143,7 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     /** Builds the exact immutable HTTP body used by the aggregate dispatcher and dead-letter fallback. */
     byte[] prepareBatchBody(List<WorkOrderEvent> events) throws Exception {
+        loadConfig(events.get(0).getTenantId());
         return objectMapper.writeValueAsBytes(buildMessageBody(
                 formatBatchText(events), firstConversationId(events), firstSenderStaffId(events)));
     }
@@ -165,6 +172,17 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             body.put("senderStaffId", staffId);
         }
         return body;
+    }
+    CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+        super(objectMapper, deadLetterService); this.integrationResolver = null;
+    }
+
+    private void loadConfig(Long tenantId) {
+        if (integrationResolver == null) return;
+        var config = integrationResolver.resolve(tenantId, IntegrationType.CARGO_OWNER);
+        if (!config.enabled()) throw new IllegalStateException("Cargo owner integration is disabled");
+        targetUrl = config.text("url"); authorization = config.secret("authorization");
+        workOrderDetailBaseUrl = config.text("workOrderDetailBaseUrl");
     }
 
     // ----------------------------------------------------------------
@@ -271,5 +289,12 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             throw new IllegalArgumentException("[CargoOwner] " + property + " 必须是完整 http/https URL");
         }
         return trimmed;
+    }
+    @Override
+    public synchronized void dispatch(String eventType, Object payload) { super.dispatch(eventType, payload); }
+
+    @Override
+    public synchronized DispatchResult retryRaw(String eventType, String eventId, byte[] rawBody) {
+        return super.retryRaw(eventType, eventId, rawBody);
     }
 }

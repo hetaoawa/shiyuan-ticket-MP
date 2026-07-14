@@ -2,7 +2,6 @@ package top.hetao.shiyuanticketmp.common.config;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -18,7 +17,6 @@ import java.net.URI;
  * <p>支持 AWS S3、MinIO、阿里云 OSS 等 S3 协议兼容存储。
  * 预签名 URL 用于客户端直传，减轻服务器带宽压力。
  */
-@Configuration
 public class S3Config {
 
     @Value("${s3.endpoint}")

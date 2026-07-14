@@ -2,11 +2,14 @@ package top.hetao.shiyuanticketmp.webhook.sender;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -34,17 +37,18 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
     public static final String CHANNEL_CODE = "DINGTALK";
     private static final String DINGTALK_API_URL = "https://oapi.dingtalk.com/robot/send";
 
-    @Value("${webhook.dingtalk.access-token:}")
     private String accessToken;
 
-    @Value("${webhook.dingtalk.secret:}")
     private String secret;
 
-    @Value("${webhook.dingtalk.work-order-detail-base-url:}")
     private String workOrderDetailBaseUrl;
+    private final TenantIntegrationResolver integrationResolver;
 
-    public DingTalkDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+    @Autowired
+    public DingTalkDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService,
+                              TenantIntegrationResolver integrationResolver) {
         super(objectMapper, deadLetterService);
+        this.integrationResolver = integrationResolver;
     }
 
     @Override
@@ -59,6 +63,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
 
     @Override
     protected String buildRequestUrl() {
+        if (integrationResolver != null) loadConfig(TenantContext.requireTenantId());
         requireNonBlank(accessToken, "webhook.dingtalk.access-token");
         requireNonBlank(secret, "webhook.dingtalk.secret");
         validateHttpUrl(workOrderDetailBaseUrl,
@@ -69,6 +74,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
     @Override
     protected byte[] buildRequestBody(String eventId, String eventType,
                                        Object payload) throws Exception {
+        if (payload instanceof WorkOrderEvent event) loadConfig(event.getTenantId());
         String message = formatSingleMessage(eventType, payload);
         Map<String, Object> body = Map.of(
                 "msgtype", "markdown",
@@ -110,7 +116,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
     /**
      * 批量投递：将多条事件合并为一条 Markdown 消息发送。
      */
-    public void dispatchBatch(List<WorkOrderEvent> events) {
+    public synchronized void dispatchBatch(List<WorkOrderEvent> events) {
         if (events == null || events.isEmpty()) return;
 
         String eventId = UUID.randomUUID().toString();
@@ -126,6 +132,7 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
 
     /** Builds the exact immutable HTTP body used by the aggregate dispatcher and dead-letter fallback. */
     byte[] prepareBatchBody(List<WorkOrderEvent> events) throws Exception {
+        loadConfig(events.get(0).getTenantId());
         String markdown = formatBatchMarkdown(events);
         Map<String, Object> body = Map.of(
                 "msgtype", "markdown",
@@ -150,6 +157,17 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
             log.error("[DingTalk] 生成签名URL失败", e);
             throw new RuntimeException("生成钉钉签名URL失败", e);
         }
+    }
+    DingTalkDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+        super(objectMapper, deadLetterService); this.integrationResolver = null;
+    }
+
+    private void loadConfig(Long tenantId) {
+        if (integrationResolver == null) return;
+        var config = integrationResolver.resolve(tenantId, IntegrationType.DINGTALK);
+        if (!config.enabled()) throw new IllegalStateException("DingTalk integration is disabled");
+        accessToken = config.secret("accessToken"); secret = config.secret("secret");
+        workOrderDetailBaseUrl = config.text("workOrderDetailBaseUrl");
     }
 
     private String generateSign(long timestamp, String secret) throws Exception {
@@ -272,5 +290,12 @@ public class DingTalkDispatcher extends AbstractWebhookDispatcher {
                 || uri.getHost() == null || uri.getHost().isBlank()) {
             throw new IllegalArgumentException("[DingTalk] " + property + " 必须是完整 http/https URL");
         }
+    }
+    @Override
+    public synchronized void dispatch(String eventType, Object payload) { super.dispatch(eventType, payload); }
+
+    @Override
+    public synchronized DispatchResult retryRaw(String eventType, String eventId, byte[] rawBody) {
+        return super.retryRaw(eventType, eventId, rawBody);
     }
 }

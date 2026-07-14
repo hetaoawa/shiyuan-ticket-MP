@@ -137,7 +137,10 @@ public class CargoOwnerWebhookController {
                     content.length() > 50 ? content.substring(0, 50) + "..." : content);
 
             // 5. 调用 AI 解析消息内容
-            String aiResult = aiParseService.parse(content);
+            String aiResult;
+            try (TenantContext.Scope ignored = TenantContext.useTenant(submitter.getTenantId())) {
+                aiResult = aiParseService.parse(content);
+            }
             JsonNode parsed = objectMapper.readTree(aiResult);
 
             String title = parsed.path("title").asText("工单");

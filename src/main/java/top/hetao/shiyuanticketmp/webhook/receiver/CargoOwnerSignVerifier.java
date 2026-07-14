@@ -7,7 +7,6 @@ import cn.hutool.json.JSONUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -29,11 +28,27 @@ public class CargoOwnerSignVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(CargoOwnerSignVerifier.class);
 
-    @Value("${webhook.cargo-owner.receive.app-id:}")
-    private String expectedAppId;
+    private final top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver integrationResolver;
+    private final top.hetao.shiyuanticketmp.auth.service.UserService userService;
 
-    @Value("${webhook.cargo-owner.receive.private-key:}")
-    private String privateKeyPem;
+    public CargoOwnerSignVerifier(top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver integrationResolver,
+                                  top.hetao.shiyuanticketmp.auth.service.UserService userService) {
+        this.integrationResolver = integrationResolver;
+        this.userService = userService;
+    }
+
+    /** Resolves the tenant only from the globally unique, server-side user mapping. */
+    public String verify(String appId, String sign, String body) {
+        try {
+            String senderStaffId = objectMapper.readTree(body).path("senderStaffId").asText(null);
+            if (senderStaffId == null || senderStaffId.isBlank()) return "senderStaffId is required";
+            var user = userService.getByExternalUserIdIgnoreTenant(senderStaffId);
+            if (user == null || user.getTenantId() == null) return "External user is not mapped";
+            return verify(user.getTenantId(), appId, sign, body);
+        } catch (Exception e) {
+            return "Invalid request body";
+        }
+    }
 
     ObjectMapper objectMapper = new ObjectMapper();
 
@@ -45,7 +60,12 @@ public class CargoOwnerSignVerifier {
      * @param body  原始请求体 JSON 字符串
      * @return null 表示验证通过，非 null 为错误信息
      */
-    public String verify(String appId, String sign, String body) {
+    public String verify(long tenantId, String appId, String sign, String body) {
+        var integration = integrationResolver.resolve(tenantId,
+                top.hetao.shiyuanticketmp.tenant.integration.IntegrationType.CARGO_OWNER);
+        if (!integration.enabled()) return "Cargo owner integration is disabled";
+        String expectedAppId = integration.text("receiveAppId");
+        String privateKeyPem = integration.secret("receivePrivateKey");
         // 1. 校验 appId
         if (expectedAppId != null && !expectedAppId.isBlank()) {
             if (appId == null || !appId.equals(expectedAppId)) {

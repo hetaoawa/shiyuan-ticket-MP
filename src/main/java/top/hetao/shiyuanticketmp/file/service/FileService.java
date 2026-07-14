@@ -4,20 +4,16 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
 import software.amazon.awssdk.services.s3.model.S3Exception;
-import software.amazon.awssdk.services.s3.presigner.S3Presigner;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedPutObjectRequest;
 import software.amazon.awssdk.services.s3.presigner.model.PresignedGetObjectRequest;
-import top.hetao.shiyuanticketmp.common.config.S3Config;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.file.entity.SysFile;
 import top.hetao.shiyuanticketmp.file.mapper.SysFileMapper;
@@ -38,19 +34,12 @@ import java.util.*;
 @Service
 public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
 
-    private final S3Client s3Client;
-    private final S3Presigner s3Presigner;
-    private final S3Config s3Config;
+    private final TenantS3ClientManager s3Clients;
     private final TenantLifecycleGuard tenantLifecycleGuard;
 
-    @Value("${s3.presign-expire-seconds:3600}")
-    private long presignExpireSeconds;
-
-    public FileService(S3Client s3Client, S3Presigner s3Presigner, S3Config s3Config,
+    public FileService(TenantS3ClientManager s3Clients,
                        TenantLifecycleGuard tenantLifecycleGuard) {
-        this.s3Client = s3Client;
-        this.s3Presigner = s3Presigner;
-        this.s3Config = s3Config;
+        this.s3Clients = s3Clients;
         this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
@@ -64,17 +53,18 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
                                                   Long fileSize, String bizType,
                                                   Long bizId, Long uploaderId) {
         tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        var storage = s3Clients.get(TenantContext.requireTenantId());
         String storageKey = buildStorageKey(originalName);
 
         PutObjectRequest putRequest = PutObjectRequest.builder()
-                .bucket(s3Config.getBucket())
+                .bucket(storage.bucket())
                 .key(storageKey)
                 .contentType(contentType)
                 .contentLength(fileSize)
                 .build();
 
-        PresignedPutObjectRequest presigned = s3Presigner.presignPutObject(r -> r
-                .signatureDuration(Duration.ofSeconds(presignExpireSeconds))
+        PresignedPutObjectRequest presigned = storage.presigner().presignPutObject(r -> r
+                .signatureDuration(Duration.ofSeconds(storage.presignExpireSeconds()))
                 .putObjectRequest(putRequest));
 
         String uploadUrl = presigned.url().toString();
@@ -90,13 +80,13 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         sysFile.setUploadStatus(SysFile.UPLOAD_STATUS_PENDING);
         save(sysFile);
         log.info("[S3] upload URL issued fileId={} storageKey={} expireSeconds={}",
-                sysFile.getId(), storageKey, presignExpireSeconds);
+                sysFile.getId(), storageKey, storage.presignExpireSeconds());
 
         Map<String, Object> result = new HashMap<>();
         result.put("fileId", sysFile.getId());
         result.put("uploadUrl", uploadUrl);
         result.put("storageKey", storageKey);
-        result.put("expireSeconds", presignExpireSeconds);
+        result.put("expireSeconds", storage.presignExpireSeconds());
         return result;
     }
 
@@ -105,6 +95,7 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
      */
     @Transactional
     public String generateDownloadUrl(Long fileId) {
+        var storage = s3Clients.get(TenantContext.requireTenantId());
         SysFile sysFile = getById(fileId);
         if (sysFile == null) {
             throw new WorkOrderException("文件不存在");
@@ -116,14 +107,14 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         verifyConfirmedObject(sysFile);
 
         GetObjectRequest.Builder getRequest = GetObjectRequest.builder()
-                .bucket(s3Config.getBucket())
+                .bucket(storage.bucket())
                 .key(sysFile.getStorageKey());
         if (hasText(sysFile.getObjectVersionId())) {
             getRequest.versionId(sysFile.getObjectVersionId());
         }
 
-        PresignedGetObjectRequest presigned = s3Presigner.presignGetObject(r -> r
-                .signatureDuration(Duration.ofSeconds(presignExpireSeconds))
+        PresignedGetObjectRequest presigned = storage.presigner().presignGetObject(r -> r
+                .signatureDuration(Duration.ofSeconds(storage.presignExpireSeconds()))
                 .getObjectRequest(getRequest.build()));
 
         return presigned.url().toString();
@@ -186,14 +177,15 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
     }
 
     private HeadObjectResponse headObject(SysFile sysFile, boolean useConfirmedVersion) {
+        var storage = s3Clients.get(TenantContext.requireTenantId());
         try {
             HeadObjectRequest.Builder request = HeadObjectRequest.builder()
-                    .bucket(s3Config.getBucket())
+                    .bucket(storage.bucket())
                     .key(sysFile.getStorageKey());
             if (useConfirmedVersion && hasText(sysFile.getObjectVersionId())) {
                 request.versionId(sysFile.getObjectVersionId());
             }
-            return s3Client.headObject(request.build());
+            return storage.client().headObject(request.build());
         } catch (Exception e) {
             throw new WorkOrderException("无法确认已上传文件");
         }
@@ -284,6 +276,7 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
     @Transactional
     public void deleteFile(Long fileId) {
         tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        var storage = s3Clients.get(TenantContext.requireTenantId());
         SysFile sysFile = getById(fileId);
         if (sysFile == null) {
             throw new WorkOrderException("文件不存在");
@@ -293,12 +286,12 @@ public class FileService extends ServiceImpl<SysFileMapper, SysFile> {
         try {
             log.info("[S3] 删除文件: fileId={}, storageKey={}", fileId, sysFile.getStorageKey());
             DeleteObjectRequest.Builder deleteRequest = DeleteObjectRequest.builder()
-                    .bucket(s3Config.getBucket())
+                    .bucket(storage.bucket())
                     .key(sysFile.getStorageKey());
             if (hasText(sysFile.getObjectVersionId())) {
                 deleteRequest.versionId(sysFile.getObjectVersionId());
             }
-            s3Client.deleteObject(deleteRequest.build());
+            storage.client().deleteObject(deleteRequest.build());
         } catch (Exception e) {
             if (isMissingObject(e)) {
                 log.info("[S3] 待删除对象已不存在: fileId={}, storageKey={}",

@@ -10,6 +10,8 @@ import top.hetao.shiyuanticketmp.tenant.setting.entity.SysTenantSetting;
 import top.hetao.shiyuanticketmp.tenant.setting.mapper.SysTenantSettingMapper;
 import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 import java.util.List;
 import java.util.Map;
@@ -30,11 +32,14 @@ public class TenantIntegrationSettingService {
 
     private final SysTenantSettingMapper settingMapper;
     private final TenantLifecycleGuard tenantLifecycleGuard;
+    private final TenantIntegrationResolver integrationResolver;
 
     public TenantIntegrationSettingService(SysTenantSettingMapper settingMapper,
-                                           TenantLifecycleGuard tenantLifecycleGuard) {
+                                           TenantLifecycleGuard tenantLifecycleGuard,
+                                           TenantIntegrationResolver integrationResolver) {
         this.settingMapper = settingMapper;
         this.tenantLifecycleGuard = tenantLifecycleGuard;
+        this.integrationResolver = integrationResolver;
     }
 
     @Transactional(readOnly = true)
@@ -78,17 +83,19 @@ public class TenantIntegrationSettingService {
 
     @Transactional(readOnly = true)
     public boolean externalInboundEnabled(Long tenantId) {
-        return Boolean.TRUE.equals(get(tenantId).getExternalInboundEnabled());
+        var config = integrationResolver.resolve(tenantId, IntegrationType.CARGO_OWNER);
+        return config.enabled() && config.bool("externalInboundEnabled", false);
     }
 
     @Transactional(readOnly = true)
     public boolean externalCloseCallbackEnabled(Long tenantId) {
-        return Boolean.TRUE.equals(get(tenantId).getExternalCloseCallbackEnabled());
+        var config = integrationResolver.resolve(tenantId, IntegrationType.CARGO_OWNER);
+        return config.enabled() && config.bool("externalCloseCallbackEnabled", false);
     }
 
     @Transactional(readOnly = true)
     public boolean dingTalkPushEnabled(Long tenantId) {
-        return Boolean.TRUE.equals(get(tenantId).getDingTalkPushEnabled());
+        return integrationResolver.resolve(tenantId, IntegrationType.DINGTALK).enabled();
     }
 
     private void validateFullRequest(TenantIntegrationSettingsRequest request) {

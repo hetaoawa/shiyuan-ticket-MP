@@ -4,7 +4,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -15,6 +14,9 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 @Service
 public class AiParseService {
@@ -40,21 +42,14 @@ public class AiParseService {
             如果任意输入与物流工单无关，直接返回 {"code":418,"msg":"不合法的输入"}。
             """;
 
-    @Value("${ai.parse.api-url:https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions}")
-    private String apiUrl;
-    @Value("${ai.parse.api-key:}")
-    private String apiKey;
-    @Value("${ai.parse.model:qwen-flash}")
-    private String model;
-    @Value("${ai.parse.timeout-seconds:30}")
-    private int timeoutSeconds;
-
     private final ObjectMapper objectMapper;
+    private final TenantIntegrationResolver integrationResolver;
     private final HttpClient httpClient = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10)).build();
 
-    public AiParseService(ObjectMapper objectMapper) {
+    public AiParseService(ObjectMapper objectMapper, TenantIntegrationResolver integrationResolver) {
         this.objectMapper = objectMapper;
+        this.integrationResolver = integrationResolver;
     }
 
     /** Keeps the existing single-item truncation and retry behavior. */
@@ -100,6 +95,12 @@ public class AiParseService {
     }
 
     private String requestContent(String systemPrompt, String userText) throws Exception {
+        var integration = integrationResolver.resolve(TenantContext.requireTenantId(), IntegrationType.AI);
+        if (!integration.enabled()) throw new AiParseException("AI integration is disabled");
+        String apiUrl = integration.text("apiUrl"); String apiKey = integration.secret("apiKey");
+        String model = integration.text("model"); int timeoutSeconds = integration.integer("timeoutSeconds", 30);
+        if (apiUrl == null || apiUrl.isBlank() || model == null || model.isBlank())
+            throw new AiParseException("AI integration is incomplete");
         Map<String, Object> body = Map.of(
                 "model", model,
                 "messages", List.of(

@@ -7,13 +7,15 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import top.hetao.shiyuanticketmp.express.dto.ExpressTraceResponse;
 import top.hetao.shiyuanticketmp.express.entity.ExpressTraceRecord;
 import top.hetao.shiyuanticketmp.express.mapper.ExpressTraceMapper;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -35,7 +37,7 @@ public class ExpressService {
 
     private static final Logger log = LoggerFactory.getLogger(ExpressService.class);
 
-    private static final String API_URL = "https://kzexpress.market.alicloudapi.com/api-mall/api/express/query";
+    private static final String DEFAULT_API_URL = "https://kzexpress.market.alicloudapi.com/api-mall/api/express/query";
 
     /** 需要手机号后四位的快递公司默认值 */
     private static final String DEFAULT_MOBILE_LAST4 = "7426";
@@ -58,21 +60,21 @@ public class ExpressService {
     /** Redis 缓存 TTL（秒）：5 分钟 */
     private static final int REDIS_CACHE_TTL_SECONDS = 300;
 
-    @Value("${express.appcode}")
-    private String appcode;
-
     private final ExpressCodeRegistry codeRegistry;
     private final ExpressTraceMapper traceMapper;
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final TenantIntegrationResolver integrationResolver;
 
     public ExpressService(ExpressCodeRegistry codeRegistry, ExpressTraceMapper traceMapper,
-                          StringRedisTemplate redisTemplate, ObjectMapper objectMapper) {
+                          StringRedisTemplate redisTemplate, ObjectMapper objectMapper,
+                          TenantIntegrationResolver integrationResolver) {
         this.codeRegistry = codeRegistry;
         this.traceMapper = traceMapper;
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.integrationResolver = integrationResolver;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -355,13 +357,19 @@ public class ExpressService {
      */
     private ExpressTraceResponse doQueryExternal(String trackingNo, String mobileLast4, String cpCode) {
         try {
+            var integration = integrationResolver.resolve(TenantContext.requireTenantId(), IntegrationType.EXPRESS);
+            if (!integration.enabled()) throw new WorkOrderException("Express integration is disabled");
+            String appcode = integration.secret("appcode");
+            String apiUrl = integration.text("apiUrl");
+            if (apiUrl == null || apiUrl.isBlank()) apiUrl = DEFAULT_API_URL;
+            if (appcode == null || appcode.isBlank()) throw new WorkOrderException("Express integration is incomplete");
             String formBody = buildFormBody(trackingNo, mobileLast4, cpCode);
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(API_URL))
+                    .uri(URI.create(apiUrl))
                     .header("Authorization", "APPCODE " + appcode)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
-                    .timeout(Duration.ofSeconds(15))
+                    .timeout(Duration.ofSeconds(integration.integer("timeoutSeconds", 15)))
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -442,4 +450,3 @@ public class ExpressService {
         }
     }
 }
-

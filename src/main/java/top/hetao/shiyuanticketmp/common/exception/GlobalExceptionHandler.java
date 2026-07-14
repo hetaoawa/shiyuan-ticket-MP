@@ -15,6 +15,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import top.hetao.shiyuanticketmp.auth.exception.InvalidAuthSessionException;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationVersionConflictException;
 
 import java.util.Map;
 
@@ -131,5 +132,13 @@ public class GlobalExceptionHandler {
                 "code", 500,
                 "message", "服务器内部错误"
         ));
+    }
+    @ExceptionHandler(IntegrationVersionConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleIntegrationConflict(IntegrationVersionConflictException e) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("code", 409, "message", e.getMessage()));
+    }
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(IllegalArgumentException e) {
+        return ResponseEntity.badRequest().body(Map.of("code", 400, "message", e.getMessage()));
     }
 }
