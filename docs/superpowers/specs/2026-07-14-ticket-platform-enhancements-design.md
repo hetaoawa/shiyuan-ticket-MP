@@ -9,7 +9,7 @@
 3. 平台共享域名的 SSL 证书由平台管理员管理，证书可不配置；Spring Boot 内嵌 Tomcat 直接提供 HTTPS，并支持网页上传和 acme.sh 自动续签导入，不引入 Nginx 等代理层。
 4. 改善登录的密码记忆、Enter 焦点流转、租户登录失效重定向、雪花 ID 展示和动态菜单空目录行为。
 
-数据库、Redis 和配置加密主密钥属于应用启动所需的平台基础设施，不属于“外部业务集成配置入库”的范围。QQ Bot 必须保留既有消息协议、事件处理、心跳、重连和收发生命周期，本期只把其配置读取点替换为租户级站内配置。当前 checkout、可见 Git 引用和历史对象中未找到该实现或旧配置键，因此实施前必须取得原实现所在文件、分支或外部模块；在缺少原实现时不得凭空新增协议或连接逻辑。
+数据库、Redis 和配置加密主密钥属于应用启动所需的平台基础设施，不属于“外部业务集成配置入库”的范围。需求中所称 QQ 相关配置，在本项目内对应现有“货主侧自定义接口 Webhook”的验签、入站和出站配置，不存在独立 QQ Bot WebSocket 客户端。本期只替换 `CargoOwnerSignVerifier`、`CargoOwnerDispatcher` 等既有实现的配置读取来源，现有验签、消息格式、事件处理和重试逻辑保持不变。
 
 ## 2. 总体架构与边界
 
@@ -22,7 +22,7 @@
 - `auth-navigation`：登录记忆、焦点流、旧 session 兼容、租户重定向和菜单剪枝。
 - `opaque-id-ui`：所有雪花 ID 的字符串展示、复制和表格防换行。
 
-外部 AI 调用、对象存储上传和 WebSocket 连接不得放入批量建单数据库事务。租户和提交人只从认证会话与 `TenantContext` 获取，站内批量请求不接受 `tenantId`、`submitterId`、`senderStaffId` 或 `conversationId`。
+外部 AI 调用和对象存储上传不得放入批量建单数据库事务。租户和提交人只从认证会话与 `TenantContext` 获取，站内批量请求不接受 `tenantId`、`submitterId`、`senderStaffId` 或 `conversationId`。
 
 ## 3. 批量 AI 解析与批量建单
 
@@ -153,7 +153,7 @@ Content-Type: application/json
 - 创建和更新时间字段；
 - 唯一约束 `(tenant_id, integration_type)`，配置通过更新或清空复用同一行，不通过逻辑删除制造重复版本。
 
-类型包括 `DINGTALK`、`CARGO_OWNER`、`QQ_BOT_WS`、`S3`、`EXPRESS` 和 `AI`。Controller 使用类型化 DTO，不允许前端提交任意键值。GET 仅返回公开字段、配置完整状态和必要的掩码，不返回 token、secret、private key、access key 或密码。更新秘密遵循“字段缺失保持、显式 clear 清除、新值替换”语义。
+类型包括 `DINGTALK`、`CARGO_OWNER`、`S3`、`EXPRESS` 和 `AI`。其中 `CARGO_OWNER` 同时承载需求中所称 QQ 相关的自定义 Webhook URL、authorization、入站 appId/private key 和详情链接等既有配置，不新增 WebSocket 地址或协议。Controller 使用类型化 DTO，不允许前端提交任意键值。GET 仅返回公开字段、配置完整状态和必要的掩码，不返回 token、secret、private key、access key 或密码。更新秘密遵循“字段缺失保持、显式 clear 清除、新值替换”语义。
 
 AES-GCM 的 AAD 绑定 `tenantId + integrationType + fieldName`。平台加密主密钥和版本来自操作系统秘密或环境变量，不得与密文存入同一数据库。日志、异常、审计详情和响应均不得包含秘密明文。
 
@@ -163,7 +163,7 @@ AES-GCM 的 AAD 绑定 `tenantId + integrationType + fieldName`。平台加密�
 
 - 钉钉、货主、物流和 AI 每次操作从 resolver 取得当前版本配置；
 - S3 客户端和 presigner 按 `(tenantId, configVersion)` 缓存，配置变化时关闭旧客户端并重建；
-- QQ Bot WS 只替换既有实现的配置注入点；长连接实例创建时显式绑定 tenantId，既有协议、消费者、心跳、重连和连接生命周期保持不变。当前代码缺失时暂停该适配，不以新实现代替原逻辑；
+- 货主侧自定义接口只替换既有 `CargoOwnerSignVerifier`、`CargoOwnerDispatcher` 和相关监听器的配置注入点；验签算法、消息格式、事件触发、重试和死信行为保持不变；
 - 异步事件、重试和死信始终显式携带 tenantId，禁止依赖线程遗留上下文；
 - 多实例通过 Redis 发布配置版本失效消息；本地短 TTL 缓存作为丢失消息的兜底。
 
@@ -247,7 +247,7 @@ Docker 推荐仅发布这一个容器端口，例如 `-p 443:9860` 或 Compose �
 - 429：AI 频率限制或 418 封禁，携带重试时间。
 - 500：不可恢复的数据库或运行时错误；批量事务必须回滚。
 
-前端 HTTP/业务错误提示仍由 `request.js` 唯一负责，视图层不重复 toast。秘密字段不进入日志、异常、审计详情或 API 响应。外部 URL 需限制协议和长度；QQ Bot WS 仅允许 `ws`/`wss`，生产配置建议强制 `wss`；Webhook 目标需防止 SSRF，至少禁止环回、链路本地和私网地址，平台明确允许的内网目标通过受控白名单配置。
+前端 HTTP/业务错误提示仍由 `request.js` 唯一负责，视图层不重复 toast。秘密字段不进入日志、异常、审计详情或 API 响应。外部 URL 需限制协议和长度；Webhook 目标需防止 SSRF，至少禁止环回、链路本地和私网地址，平台明确允许的内网目标通过受控白名单配置。
 
 ## 10. 验证与验收
 
