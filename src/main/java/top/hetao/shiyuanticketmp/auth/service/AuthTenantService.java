@@ -19,6 +19,7 @@ public class AuthTenantService {
 
     public static final String PRINCIPAL_TENANT_ID = "principalTenantId";
     public static final String ACTIVE_TENANT_ID = "activeTenantId";
+    public static final String ACTIVE_TENANT_CODE = "activeTenantCode";
     public static final String ACTIVE_TENANT_NAME = "activeTenantName";
     public static final String GLOBAL_ADMIN = "globalAdmin";
 
@@ -70,9 +71,11 @@ public class AuthTenantService {
         session.set(GLOBAL_ADMIN, resolved.globalAdmin());
         if (resolved.globalAdmin()) {
             session.delete(ACTIVE_TENANT_ID);
+            session.delete(ACTIVE_TENANT_CODE);
             session.delete(ACTIVE_TENANT_NAME);
         } else {
             session.set(ACTIVE_TENANT_ID, resolved.user().getTenantId());
+            session.set(ACTIVE_TENANT_CODE, normalizeTenantCode(resolved.tenant().getTenantCode()));
             session.set(ACTIVE_TENANT_NAME, resolved.tenant().getTenantName());
         }
         return readContext(session);
@@ -86,6 +89,7 @@ public class AuthTenantService {
         return new AuthTenantContext(
                 asLong(session.get(PRINCIPAL_TENANT_ID)),
                 asLong(session.get(ACTIVE_TENANT_ID)),
+                asString(session.get(ACTIVE_TENANT_CODE)),
                 asString(session.get(ACTIVE_TENANT_NAME)),
                 Boolean.TRUE.equals(session.get(GLOBAL_ADMIN)));
     }
@@ -105,6 +109,7 @@ public class AuthTenantService {
         }
         SysTenant target = tenantService.requireEnabled(tenantId);
         session.set(ACTIVE_TENANT_ID, target.getId());
+        session.set(ACTIVE_TENANT_CODE, normalizeTenantCode(target.getTenantCode()));
         session.set(ACTIVE_TENANT_NAME, target.getTenantName());
         return readContext(session);
     }

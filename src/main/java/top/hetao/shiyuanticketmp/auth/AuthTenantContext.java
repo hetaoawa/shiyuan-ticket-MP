@@ -4,6 +4,7 @@ package top.hetao.shiyuanticketmp.auth;
 public record AuthTenantContext(
         Long principalTenantId,
         Long activeTenantId,
+        String activeTenantCode,
         String activeTenantName,
         boolean globalAdmin) {
 }

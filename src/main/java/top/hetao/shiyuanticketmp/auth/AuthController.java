@@ -186,6 +186,7 @@ public class AuthController {
     private static void putContext(Map<String, Object> result, AuthTenantContext context) {
         result.put("principalTenantId", context.principalTenantId());
         result.put("activeTenantId", context.activeTenantId());
+        result.put("activeTenantCode", context.activeTenantCode());
         result.put("activeTenantName", context.activeTenantName());
         result.put("globalAdmin", context.globalAdmin());
     }
