@@ -13,6 +13,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import top.hetao.shiyuanticketmp.auth.exception.InvalidAuthSessionException;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.Map;
@@ -53,6 +54,14 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
                 "code", 401,
                 "message", "未登录或登录已过期"
+        ));
+    }
+
+    @ExceptionHandler(InvalidAuthSessionException.class)
+    public ResponseEntity<Map<String, Object>> handleInvalidAuthSession(InvalidAuthSessionException e) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                "code", 401,
+                "message", "登录状态无效，请重新登录"
         ));
     }
 

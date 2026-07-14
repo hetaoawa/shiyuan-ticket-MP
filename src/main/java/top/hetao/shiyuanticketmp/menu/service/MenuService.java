@@ -13,7 +13,6 @@ import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.*;
-import java.util.stream.Collectors;
 
 @Service
 public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
@@ -29,14 +28,9 @@ public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
                 .eq(SysMenu::getVisible, 1)
                 .orderByAsc(SysMenu::getSortOrder));
 
-        Set<String> permSet = new HashSet<>(userPermissions);
-        List<SysMenu> accessibleMenus = allMenus.stream()
-                .filter(menu -> menu.getPermissionCode() == null
-                        || menu.getPermissionCode().isBlank()
-                        || permSet.contains(menu.getPermissionCode()))
-                .collect(Collectors.toList());
-
-        return buildTree(accessibleMenus, 0L);
+        Set<String> permSet = userPermissions == null
+                ? Collections.emptySet() : new HashSet<>(userPermissions);
+        return buildNavigationTree(allMenus, 0L, permSet);
     }
 
     public List<Map<String, Object>> getFullTree() {
@@ -120,11 +114,46 @@ public class MenuService extends ServiceImpl<SysMenuMapper, SysMenu> {
                 node.put("visible", menu.getVisible());
 
                 List<Map<String, Object>> children = buildTree(menus, menu.getId());
-                if (!children.isEmpty()) {
-                    node.put("children", children);
-                }
+                node.put("children", children);
                 tree.add(node);
             }
+        }
+        return tree;
+    }
+
+    private List<Map<String, Object>> buildNavigationTree(List<SysMenu> menus, Long parentId,
+                                                           Set<String> permissions) {
+        List<Map<String, Object>> tree = new ArrayList<>();
+        for (SysMenu menu : menus) {
+            if (!Objects.equals(menu.getParentId(), parentId)) {
+                continue;
+            }
+
+            List<Map<String, Object>> children = buildNavigationTree(menus, menu.getId(), permissions);
+            String menuType = menu.getMenuType() == null ? "MENU" : menu.getMenuType();
+            if ("BUTTON".equalsIgnoreCase(menuType)) {
+                continue;
+            }
+            boolean permitted = menu.getPermissionCode() == null
+                    || menu.getPermissionCode().isBlank()
+                    || permissions.contains(menu.getPermissionCode());
+            if (!permitted || ("DIR".equalsIgnoreCase(menuType) && children.isEmpty())) {
+                continue;
+            }
+
+            Map<String, Object> node = new LinkedHashMap<>();
+            node.put("id", menu.getId());
+            node.put("parentId", menu.getParentId());
+            node.put("menuName", menu.getMenuName());
+            node.put("menuCode", menu.getMenuCode());
+            node.put("path", menu.getPath());
+            node.put("icon", menu.getIcon());
+            node.put("sortOrder", menu.getSortOrder());
+            node.put("menuType", menu.getMenuType());
+            node.put("permissionCode", menu.getPermissionCode());
+            node.put("visible", menu.getVisible());
+            node.put("children", children);
+            tree.add(node);
         }
         return tree;
     }

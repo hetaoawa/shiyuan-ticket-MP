@@ -6,6 +6,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.AuthTenantContext;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
+import top.hetao.shiyuanticketmp.auth.exception.InvalidAuthSessionException;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.tenant.entity.SysTenant;
@@ -22,6 +23,8 @@ public class AuthTenantService {
     public static final String ACTIVE_TENANT_CODE = "activeTenantCode";
     public static final String ACTIVE_TENANT_NAME = "activeTenantName";
     public static final String GLOBAL_ADMIN = "globalAdmin";
+    public static final String LEGACY_TENANT_ID = "tenantId";
+    public static final String LEGACY_IS_ADMIN = "isAdmin";
 
     private final SysUserMapper userMapper;
     private final UserService userService;
@@ -67,6 +70,8 @@ public class AuthTenantService {
     }
 
     public AuthTenantContext initializeSession(ResolvedLogin resolved, SaSession session) {
+        session.delete(LEGACY_TENANT_ID);
+        session.delete(LEGACY_IS_ADMIN);
         session.set(PRINCIPAL_TENANT_ID, resolved.user().getTenantId());
         session.set(GLOBAL_ADMIN, resolved.globalAdmin());
         if (resolved.globalAdmin()) {
@@ -94,6 +99,88 @@ public class AuthTenantService {
                 Boolean.TRUE.equals(session.get(GLOBAL_ADMIN)));
     }
 
+    /** Validates current tenant identity and migrates legacy tenant sessions. */
+    @Transactional(readOnly = true)
+    public AuthTenantContext requireSessionContext(Object loginId, SaSession session) {
+        if (session == null) {
+            throw invalidSession("Session is missing");
+        }
+        if (session.get(PRINCIPAL_TENANT_ID) == null) {
+            return migrateLegacySession(loginId, session);
+        }
+
+        try {
+            Long principalTenantId = asLong(session.get(PRINCIPAL_TENANT_ID));
+            boolean globalAdmin = requireBoolean(session.get(GLOBAL_ADMIN));
+            if (principalTenantId == null || principalTenantId < 0
+                    || globalAdmin != Long.valueOf(0L).equals(principalTenantId)) {
+                throw invalidSession("Invalid session principal");
+            }
+
+            SysTenant principalTenant = tenantService.requireEnabled(principalTenantId);
+            Long activeTenantId = asLong(session.get(ACTIVE_TENANT_ID));
+            if (activeTenantId == null) {
+                if (!globalAdmin) {
+                    throw invalidSession("Active tenant is missing");
+                }
+                clearActiveTenant(session);
+                return readContext(session);
+            }
+            if (activeTenantId <= 0 || (!globalAdmin && !activeTenantId.equals(principalTenantId))) {
+                throw invalidSession("Invalid active tenant");
+            }
+            SysTenant activeTenant = globalAdmin
+                    ? tenantService.requireEnabled(activeTenantId) : principalTenant;
+            storeActiveTenant(session, activeTenant);
+            return readContext(session);
+        } catch (InvalidAuthSessionException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw invalidSession("Invalid session tenant", e);
+        }
+    }
+
+    private AuthTenantContext migrateLegacySession(Object loginId, SaSession session) {
+        try {
+            Long userId = asLong(loginId);
+            Long legacyTenantId = asLong(session.get(LEGACY_TENANT_ID));
+            if (userId == null || legacyTenantId == null) {
+                throw invalidSession("Incomplete legacy session");
+            }
+
+            SysUser user;
+            try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+                user = userMapper.selectByIdIgnoreTenant(userId);
+            }
+            if (user == null || !Integer.valueOf(1).equals(user.getStatus())
+                    || user.getTenantId() == null || !user.getTenantId().equals(legacyTenantId)) {
+                throw invalidSession("Invalid legacy session user");
+            }
+
+            SysTenant principalTenant = tenantService.requireEnabled(user.getTenantId());
+            boolean globalAdmin = Long.valueOf(0L).equals(user.getTenantId())
+                    && userService.getPrincipalRoleCodes(userId).contains("GLOBAL_SYSTEM_ADMIN");
+            if (Long.valueOf(0L).equals(user.getTenantId()) && !globalAdmin) {
+                throw invalidSession("Invalid platform session role");
+            }
+
+            session.set(PRINCIPAL_TENANT_ID, user.getTenantId());
+            session.set(GLOBAL_ADMIN, globalAdmin);
+            if (globalAdmin) {
+                clearActiveTenant(session);
+            } else {
+                storeActiveTenant(session, principalTenant);
+            }
+            session.delete(LEGACY_TENANT_ID);
+            session.delete(LEGACY_IS_ADMIN);
+            return readContext(session);
+        } catch (InvalidAuthSessionException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw invalidSession("Legacy session migration failed", e);
+        }
+    }
+
     @Transactional(readOnly = true)
     public AuthTenantContext switchTenant(Long tenantId) {
         return switchTenant(tenantId, StpUtil.getSession());
@@ -108,10 +195,20 @@ public class AuthTenantService {
             throw new WorkOrderException("请选择有效的业务租户");
         }
         SysTenant target = tenantService.requireEnabled(tenantId);
-        session.set(ACTIVE_TENANT_ID, target.getId());
-        session.set(ACTIVE_TENANT_CODE, normalizeTenantCode(target.getTenantCode()));
-        session.set(ACTIVE_TENANT_NAME, target.getTenantName());
+        storeActiveTenant(session, target);
         return readContext(session);
+    }
+
+    private static void storeActiveTenant(SaSession session, SysTenant tenant) {
+        session.set(ACTIVE_TENANT_ID, tenant.getId());
+        session.set(ACTIVE_TENANT_CODE, normalizeTenantCode(tenant.getTenantCode()));
+        session.set(ACTIVE_TENANT_NAME, tenant.getTenantName());
+    }
+
+    private static void clearActiveTenant(SaSession session) {
+        session.delete(ACTIVE_TENANT_ID);
+        session.delete(ACTIVE_TENANT_CODE);
+        session.delete(ACTIVE_TENANT_NAME);
     }
 
     public static String normalizeTenantCode(String tenantCode) {
@@ -128,6 +225,21 @@ public class AuthTenantService {
 
     private static String asString(Object value) {
         return value == null ? null : value.toString();
+    }
+
+    private static boolean requireBoolean(Object value) {
+        if (!(value instanceof Boolean booleanValue)) {
+            throw invalidSession("Invalid global administrator marker");
+        }
+        return booleanValue;
+    }
+
+    private static InvalidAuthSessionException invalidSession(String message) {
+        return new InvalidAuthSessionException(message);
+    }
+
+    private static InvalidAuthSessionException invalidSession(String message, Throwable cause) {
+        return new InvalidAuthSessionException(message, cause);
     }
 
     public record ResolvedLogin(SysUser user, SysTenant tenant, boolean globalAdmin) {
