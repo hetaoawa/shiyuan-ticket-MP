@@ -9,7 +9,7 @@
 3. 平台共享域名的 SSL 证书由平台管理员管理，证书可不配置；Spring Boot 内嵌 Tomcat 直接提供 HTTPS，并支持网页上传和 acme.sh 自动续签导入，不引入 Nginx 等代理层。
 4. 改善登录的密码记忆、Enter 焦点流转、租户登录失效重定向、雪花 ID 展示和动态菜单空目录行为。
 
-数据库、Redis 和配置加密主密钥属于应用启动所需的平台基础设施，不属于“外部业务集成配置入库”的范围。QQ Bot 当前仓库没有消息消费者和发送协议，本期提供租户级配置、校验、脱敏 API 和运行时解析边界，不虚构机器人消息协议。
+数据库、Redis 和配置加密主密钥属于应用启动所需的平台基础设施，不属于“外部业务集成配置入库”的范围。QQ Bot 必须保留既有消息协议、事件处理、心跳、重连和收发生命周期，本期只把其配置读取点替换为租户级站内配置。当前 checkout、可见 Git 引用和历史对象中未找到该实现或旧配置键，因此实施前必须取得原实现所在文件、分支或外部模块；在缺少原实现时不得凭空新增协议或连接逻辑。
 
 ## 2. 总体架构与边界
 
@@ -18,7 +18,7 @@
 - `workorder-batch`：批量草稿、校验、幂等记录、事务创建和结果返回。
 - `ai-parse-policy`：单条与批量 AI 解析共用缓存、限流、418 拒绝计数和租户隔离策略。
 - `tenant-integration`：租户级类型化集成配置、秘密加密、热更新和旧配置导入。
-- `platform-ssl`：全局平台证书、内嵌 Tomcat HTTPS Connector、ACME challenge 和证书热重载。
+- `platform-ssl`：全局平台证书、内嵌 Tomcat 单端口 HTTP/HTTPS Connector 切换、ACME 导入和证书热重载。
 - `auth-navigation`：登录记忆、焦点流、旧 session 兼容、租户重定向和菜单剪枝。
 - `opaque-id-ui`：所有雪花 ID 的字符串展示、复制和表格防换行。
 
@@ -163,7 +163,7 @@ AES-GCM 的 AAD 绑定 `tenantId + integrationType + fieldName`。平台加密�
 
 - 钉钉、货主、物流和 AI 每次操作从 resolver 取得当前版本配置；
 - S3 客户端和 presigner 按 `(tenantId, configVersion)` 缓存，配置变化时关闭旧客户端并重建；
-- QQ Bot WS 提供配置 resolver 和连接管理接口，但在缺少已定义的机器人消息协议时不建立虚构的发送消费者；
+- QQ Bot WS 只替换既有实现的配置注入点；长连接实例创建时显式绑定 tenantId，既有协议、消费者、心跳、重连和连接生命周期保持不变。当前代码缺失时暂停该适配，不以新实现代替原逻辑；
 - 异步事件、重试和死信始终显式携带 tenantId，禁止依赖线程遗留上下文；
 - 多实例通过 Redis 发布配置版本失效消息；本地短 TTL 缓存作为丢失消息的兜底。
 
@@ -190,29 +190,31 @@ AES-GCM 的 AAD 绑定 `tenantId + integrationType + fieldName`。平台加密�
 
 ### 5.1 全局模型与权限
 
-SSL 仅服务平台共享域名，由 `GLOBAL_SYSTEM_ADMIN` 管理。新增无 `tenant_id` 的平台 SSL 配置和证书版本表，并加入租户拦截器排除表。配置包含启用状态、共享域名、HTTPS/ACME HTTP 端口、强制 HTTPS 状态、active certificate version、证书指纹、SAN、有效期、最近加载状态和错误摘要。
+SSL 仅服务平台共享域名，由 `GLOBAL_SYSTEM_ADMIN` 管理。新增无 `tenant_id` 的平台 SSL 配置和证书版本表，并加入租户拦截器排除表。配置包含目标启用状态、共享域名、对外 HTTPS URL、active certificate version、证书指纹、SAN、有效期、最近加载状态和错误摘要。容器内监听端口始终复用现有 `server.port`，通常为 9860，不在应用中另开 80 或 443。
 
 私钥与证书链解析为 PKCS12 后使用 AES-256-GCM 加密入库。上传时校验证书链、有效期、SAN 覆盖平台域名、私钥与公钥匹配，并支持 RSA 和 ECC。API 只返回主题、SAN、指纹、有效期和运行状态，永不回显私钥。
 
-### 5.2 内嵌 Tomcat 运行模型
+### 5.2 内嵌 Tomcat 单端口运行模型
 
-不配置启动期 `server.ssl.*`，保留现有 HTTP 端口作为 bootstrap/内网管理通道。`ApplicationReadyEvent` 后由 `EmbeddedTomcatSslManager` 读取平台证书：
+容器内只监听 `server.port`。同一个 TCP 端口不能同时处理明文 HTTP 和 TLS，因此运行状态只有两种：SSL disabled 时 `9860=HTTP`，SSL enabled 时 `9860=HTTPS`。TLS 状态下明文 HTTP 在协议解析前失败，应用无法从同一端口返回 308。
 
-- 没有证书或 SSL disabled：只运行 HTTP；
-- 有有效 active certificate：向正在运行的 Tomcat Service 动态增加 HTTPS Connector；
-- 上传或续签后：更新内存 KeyStore 并调用 Tomcat 10.1.5 的 `reloadSslHostConfig`；
-- 热重载失败：保持旧 active certificate，记录失败状态；兼容兜底为停止、移除并重建 HTTPS Connector，HTTP 通道不中断；
-- 禁用 SSL：安全移除 HTTPS Connector。
+首次安装且平台 SSL 表不存在或明确 disabled 时以 HTTP 启动，平台管理员只能从宿主回环或可信管理网络上传首张证书。目标状态 enabled 后，证书异常、无法解密、过期或 SAN 不匹配必须 fail closed，不得静默降级为 HTTP。
 
-启用 SSL 后，公网 HTTP 除 ACME challenge 和本机 deploy API 外返回 308 到 HTTPS。bootstrap 端口应由防火墙限制为内网或受控管理来源，避免用户继续明文登录。绑定 80/443 需要操作系统授予低端口权限或使用宿主端口映射，端口必须空闲且防火墙放行。
+重启时不能先暴露 HTTP 再于 `ApplicationReadyEvent` 切换。专用 `WebServerFactoryCustomizer<TomcatServletWebServerFactory>` 在 Connector 创建和绑定前直接读取全局 SSL 目标状态及 active PKCS12：enabled 时为现有端口设置 SSL 和内存 KeyStore，disabled 时保持 HTTP。首次数据库迁移尚无 SSL 表按 disabled 处理；数据库不可用仍按应用原有策略启动失败。
+
+运行期启用、禁用或 HTTP/HTTPS 互换属于 Connector 协议切换，必须短暂中断：保存接口先返回切换受理结果，异步任务暂停旧 Connector、在有界时间内等待在途请求、移除并停止旧 Connector、在同一端口增加新 Connector。新 Connector 启动失败时恢复旧 Connector并回滚目标状态。前端在启停确认框中明确提示连接将短暂断开，并按配置的对外 URL 重新打开页面。
+
+常规证书续签不改变协议或端口：把新内存 KeyStore 注入现有 `SSLHostConfigCertificate` 并调用 Tomcat 10.1.5 的 `reloadSslHostConfig`。已建立连接继续完成，新 TLS 握手使用新证书；失败时保留旧 active certificate 和 Connector。
+
+Docker 推荐仅发布这一个容器端口，例如 `-p 443:9860` 或 Compose 的 `443:9860`。Tomcat 无需绑定容器内低端口；未做标准端口映射时也可使用 `https://host:9860`。首次 HTTP 配置可把同一容器端口额外发布到宿主回环，例如 `127.0.0.1:9860:9860`，这不增加容器监听端口。
 
 ### 5.3 acme.sh
 
-应用提供严格限定 token 格式的 `/.well-known/acme-challenge/{token}` 响应，支持 acme.sh stateless HTTP-01。若公网 80 不可达，则运维使用 DNS-01；应用不执行外部 shell，也不读取 `~/.acme.sh` 内部文件。
+单端口 Docker 场景默认采用 acme.sh DNS-01 自动签发；DNS provider 凭据由 acme.sh 自身安全管理，应用不执行外部 shell，也不读取 `~/.acme.sh` 内部文件。HTTP-01 必须让 CA 访问公网 80，不能由已运行 TLS 的应用端口同时响应；需要 HTTP-01 时，由宿主机 acme.sh `--standalone` 独占 80，或在首次签发阶段临时把宿主 80 映射到处于 HTTP 模式的应用端口。运行中切回 HTTP 完成挑战会中断 HTTPS，因此不作为自动续签方案。
 
-平台管理员在网页生成一次性 deploy token，数据库只保存哈希、权限范围和失效时间。acme.sh 使用稳定的 `--install-cert` 输出路径，并在 `--reloadcmd` 中把 key/fullchain POST 到仅本机允许访问的 deploy API。后端验证 token、解析证书、原子写入候选版本、热重载成功后切换 active；相同指纹重复导入保持幂等。
+平台管理员在网页生成短期、可撤销、仅证书导入 scope 的 deploy token，数据库只保存哈希、权限范围和失效时间。acme.sh 使用稳定的 `--install-cert` 输出路径，并在 `--reloadcmd` 中把 key/fullchain POST 到 deploy API。Docker 下可通过当前 HTTPS 公网映射或 Docker 私网服务地址访问，不能硬编码为 loopback。后端验证 token、解析证书、原子写入候选版本、热重载成功后切换 active；相同指纹重复导入保持幂等。首次仍为 HTTP 时，deploy API 仅允许宿主回环或可信管理网，避免明文暴露私钥和 token。
 
-首次启动无证书时 HTTPS 不可用，这是可选 SSL 的预期状态；平台管理员通过受控 HTTP bootstrap 上传首张证书。
+首次启动无证书时 HTTPS 不可用，这是可选 SSL 的预期状态；首证书上传后执行一次有提示的短暂协议切换，后续续签使用无端口中断的热重载。
 
 ## 6. 登录与租户重定向
 
@@ -257,8 +259,8 @@ SSL 仅服务平台共享域名，由 `GLOBAL_SYSTEM_ADMIN` 管理。新增无 `
 - 幂等：相同键和请求返回相同 ID 且事件不重复；相同键不同请求返回 409；并发相同键只产生一批。
 - 租户配置：跨租户不可读写；秘密不回显；GCM 篡改失败；保存后 resolver 与客户端缓存按版本更新。
 - 迁移：只导入租户 100；其他租户无 fallback；重复运行不覆盖已配置值；审计无明文。
-- SSL：无证书启动 HTTP 可用；启用后真实 TLS 握手成功；轮换后新连接指纹变化且 Spring Context 未重启；失败保留旧证书；禁用后移除 HTTPS；RSA/ECC、链、错配 key、过期、SAN 错误均覆盖。
-- ACME：合法 challenge、非法 token、过期 deploy token、重复证书、非平台管理员访问和响应脱敏均覆盖。
+- SSL：disabled 冷启动为 HTTP；enabled 且有效证书的冷启动首次监听即为 TLS，不得出现 HTTP 降级窗口；enabled 但证书缺失或无法解密时启动失败；HTTP/HTTPS 切换短时中断且失败恢复旧 Connector；轮换后新连接指纹变化且 Spring Context 与 Connector 未重启；RSA/ECC、链、错配 key、过期、SAN 错误均覆盖。
+- Docker/ACME：真实验证 `443:9860` TLS 握手和重启恢复；DNS-01 续签 deploy hook、宿主 standalone HTTP-01、非法或过期 deploy token、重复证书、非平台管理员访问和响应脱敏均覆盖；明确验证 TLS 模式下 `http://host:9860` 不会返回 308。
 - 登录/菜单：旧 session 迁移或 401、全局管理员待选租户、空系统设置目录剪枝、有权限目录保留、管理树不变。
 
 ### 10.2 前端
@@ -284,8 +286,8 @@ SSL 仅服务平台共享域名，由 `GLOBAL_SYSTEM_ADMIN` 管理。新增无 `
 2. 部署双读迁移能力，仅租户 100 在限定灰度期允许旧值 fallback。
 3. 执行并核对一次性导入，切换租户 100 到数据库配置，随后关闭旧业务配置读取。
 4. 上线批量 AI、批量创建和前端编辑器；单建接口保持兼容。
-5. 上线平台 SSL 页面和受控 HTTP bootstrap，上传候选证书并完成真实 TLS 握手后再启用强制 HTTPS。
-6. 配置 acme.sh challenge 与 deploy token，完成一次测试续签和热重载。
+5. 上线平台 SSL 页面，从宿主回环或可信管理网的 HTTP 首次入口上传候选证书，确认 Docker 端口映射后执行有提示的 HTTPS 协议切换并完成真实 TLS 握手。
+6. 配置 acme.sh DNS-01（或宿主 standalone HTTP-01）与 deploy token，完成一次测试续签和热重载。
 7. 上线登录、菜单和 ID 展示修复。
 
-集成配置可按类型关闭并回到“未配置/禁用”，但不得回退为所有租户共享旧凭据。SSL 热重载失败保留旧 active certificate；首次启用失败继续使用受控 HTTP。批量建单不改变现有单建接口，因此可通过隐藏批量入口回滚前端而不影响单建。
+集成配置可按类型关闭并回到“未配置/禁用”，但不得回退为所有租户共享旧凭据。SSL 证书热重载失败保留旧 active certificate；HTTP/HTTPS Connector 切换失败恢复旧协议和旧目标状态。批量建单不改变现有单建接口，因此可通过隐藏批量入口回滚前端而不影响单建。
