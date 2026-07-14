@@ -42,6 +42,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/api/auth/tenant-options",
             "/api/webhook",
             "/api/webhook/cargo-owner",
+            "/api/platform/ssl/deploy/import",
             "/error",
             "/favicon.ico"
     };
@@ -53,6 +54,7 @@ public class SaTokenConfig implements WebMvcConfigurer {
             "/api/auth/logout",
             "/api/webhook",
             "/api/webhook/cargo-owner",
+            "/api/platform/ssl/deploy/import",
             "/error",
             "/favicon.ico"
     };
@@ -115,6 +117,9 @@ public class SaTokenConfig implements WebMvcConfigurer {
         }
 
         private static boolean isTenantNeutral(String uri) {
+            if (uri != null && uri.startsWith("/api/admin/platform/ssl")) {
+                return true;
+            }
             if ("/api/auth/me".equals(uri)
                     || "/api/auth/switch-tenant".equals(uri)
                     || "/api/auth/password".equals(uri)

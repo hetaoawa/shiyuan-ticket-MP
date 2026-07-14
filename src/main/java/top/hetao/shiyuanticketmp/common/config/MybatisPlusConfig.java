@@ -39,7 +39,11 @@ public class MybatisPlusConfig {
             "sys_permission",
             "sys_user_role",
             "sys_role_permission",
-            "express_trace"
+            "express_trace",
+            "platform_ssl_config",
+            "platform_ssl_certificate_version",
+            "platform_ssl_deploy_token",
+            "platform_ssl_operation"
     );
 
     /**
