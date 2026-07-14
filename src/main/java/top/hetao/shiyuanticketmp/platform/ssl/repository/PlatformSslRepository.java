@@ -8,6 +8,7 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.platform.ssl.certificate.CertificateBundle;
 import top.hetao.shiyuanticketmp.platform.ssl.crypto.EncryptedPayload;
 
@@ -132,6 +133,7 @@ public class PlatformSslRepository {
                 """, desired, effective, certificateId, blankToNull(domain), truncate(lastError), actorId);
     }
 
+    @Transactional
     public void activateCertificate(long id) {
         jdbcTemplate.update("UPDATE platform_ssl_certificate_version SET status = 'SUPERSEDED' WHERE status = 'ACTIVE'");
         jdbcTemplate.update("UPDATE platform_ssl_certificate_version SET status = 'ACTIVE' WHERE id = ?", id);
@@ -141,8 +143,22 @@ public class PlatformSslRepository {
         jdbcTemplate.update("UPDATE platform_ssl_certificate_version SET status = 'FAILED' WHERE id = ?", id);
     }
 
+    @Transactional
+    public void restoreCertificate(Long previousId, long failedId) {
+        failCertificate(failedId);
+        if (previousId != null) {
+            jdbcTemplate.update(
+                    "UPDATE platform_ssl_certificate_version SET status = 'ACTIVE' WHERE id = ?", previousId);
+        }
+    }
+
     public void markLegacyImported() {
         jdbcTemplate.update("UPDATE platform_ssl_config SET legacy_import_completed = 1 WHERE id = 1");
+    }
+
+    public void updateLegacyImported(boolean imported) {
+        jdbcTemplate.update(
+                "UPDATE platform_ssl_config SET legacy_import_completed = ? WHERE id = 1", imported);
     }
 
     public long insertDeployToken(String name, byte[] tokenHash, LocalDateTime expiresAt, long actorId) {

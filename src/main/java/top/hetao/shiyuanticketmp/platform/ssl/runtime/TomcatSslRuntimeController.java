@@ -59,29 +59,35 @@ public class TomcatSslRuntimeController implements SslRuntimeController {
     }
 
     @Override
-    public synchronized void enable(SslKeyStoreMaterial material) throws Exception {
+    public synchronized SslRuntimeTransition enable(SslKeyStoreMaterial material) throws Exception {
         Path target = keyStoreFiles.create(material);
         Path previous = activeKeyStore;
         boolean previousHttps = isHttps();
         try {
             reconfigure(true, target);
             activeKeyStore = target;
-            if (previous != null && !previous.equals(target)) keyStoreFiles.delete(previous);
+            return transition(previous, target, () -> {
+                reconfigure(previousHttps, previous);
+                activeKeyStore = previous;
+            });
         } catch (Exception failure) {
-            keyStoreFiles.delete(target);
             rollback(previousHttps, previous, failure);
+            keyStoreFiles.delete(target);
             throw failure;
         }
     }
 
     @Override
-    public synchronized void disable() throws Exception {
+    public synchronized SslRuntimeTransition disable() throws Exception {
         Path previous = activeKeyStore;
         boolean previousHttps = isHttps();
         try {
             reconfigure(false, null);
             activeKeyStore = null;
-            keyStoreFiles.delete(previous);
+            return transition(previous, null, () -> {
+                reconfigure(previousHttps, previous);
+                activeKeyStore = previous;
+            });
         } catch (Exception failure) {
             rollback(previousHttps, previous, failure);
             throw failure;
@@ -89,7 +95,7 @@ public class TomcatSslRuntimeController implements SslRuntimeController {
     }
 
     @Override
-    public synchronized void reload(SslKeyStoreMaterial material) throws Exception {
+    public synchronized SslRuntimeTransition reload(SslKeyStoreMaterial material) throws Exception {
         if (!isHttps()) {
             throw new IllegalStateException("Cannot hot-reload TLS while the connector is HTTP");
         }
@@ -99,7 +105,14 @@ public class TomcatSslRuntimeController implements SslRuntimeController {
             configureHost(protocol(requireConnector()), target);
             protocol(requireConnector()).reloadSslHostConfig(DEFAULT_HOST);
             activeKeyStore = target;
-            keyStoreFiles.delete(previous);
+            return transition(previous, target, () -> {
+                if (previous == null) {
+                    throw new IllegalStateException("Previous TLS key store is missing");
+                }
+                configureHost(protocol(requireConnector()), previous);
+                protocol(requireConnector()).reloadSslHostConfig(DEFAULT_HOST);
+                activeKeyStore = previous;
+            });
         } catch (Exception failure) {
             keyStoreFiles.delete(target);
             if (previous != null) {
@@ -121,6 +134,36 @@ public class TomcatSslRuntimeController implements SslRuntimeController {
         } catch (Exception rollbackFailure) {
             failure.addSuppressed(rollbackFailure);
         }
+    }
+
+    private SslRuntimeTransition transition(Path previous, Path target, RollbackAction rollbackAction) {
+        return new SslRuntimeTransition() {
+            private boolean finished;
+
+            @Override
+            public void commit() {
+                synchronized (TomcatSslRuntimeController.this) {
+                    if (finished) return;
+                    finished = true;
+                    if (previous != null && !previous.equals(target)) keyStoreFiles.delete(previous);
+                }
+            }
+
+            @Override
+            public void rollback() throws Exception {
+                synchronized (TomcatSslRuntimeController.this) {
+                    if (finished) return;
+                    rollbackAction.run();
+                    finished = true;
+                    if (target != null && !target.equals(previous)) keyStoreFiles.delete(target);
+                }
+            }
+        };
+    }
+
+    @FunctionalInterface
+    private interface RollbackAction {
+        void run() throws Exception;
     }
 
     private void reconfigure(boolean https, Path keyStore) throws Exception {

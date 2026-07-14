@@ -75,7 +75,8 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional
     public void assignPermissions(Long roleId, List<Long> permissionIds) {
-        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        Long tenantId = TenantContext.requireTenantId();
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
         SysRole role = getById(roleId);
         if (role == null) {
             throw new WorkOrderException("角色不存在: " + roleId);
@@ -84,15 +85,23 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
         if (permissionIds == null) {
             throw new WorkOrderException("权限ID列表不能为空，请使用空列表 [] 表示清空权限");
         }
-        rolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>()
-                .eq(SysRolePermission::getRoleId, roleId));
+        List<SysPermission> permissions = new java.util.ArrayList<>(permissionIds.size());
         for (Long permissionId : permissionIds) {
-            if (permissionId == null || permissionMapper.selectById(permissionId) == null) {
+            SysPermission permission = permissionId == null ? null : permissionMapper.selectById(permissionId);
+            if (permission == null) {
                 throw new WorkOrderException("权限不存在: " + permissionId);
             }
+            if (!Long.valueOf(0L).equals(tenantId) && isPlatformPermission(permission)) {
+                throw new WorkOrderException("租户角色不能绑定平台权限: " + permission.getPermissionCode());
+            }
+            permissions.add(permission);
+        }
+        rolePermissionMapper.delete(new LambdaQueryWrapper<SysRolePermission>()
+                .eq(SysRolePermission::getRoleId, roleId));
+        for (SysPermission permission : permissions) {
             SysRolePermission rp = new SysRolePermission();
             rp.setRoleId(roleId);
-            rp.setPermissionId(permissionId);
+            rp.setPermissionId(permission.getId());
             rolePermissionMapper.insert(rp);
         }
     }
@@ -107,8 +116,12 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     @Transactional(readOnly = true)
     public List<SysPermission> listAllPermissions() {
-        return permissionMapper.selectList(
+        List<SysPermission> permissions = permissionMapper.selectList(
                 new LambdaQueryWrapper<SysPermission>().orderByAsc(SysPermission::getId));
+        if (Long.valueOf(0L).equals(TenantContext.requireTenantId())) {
+            return permissions;
+        }
+        return permissions.stream().filter(permission -> !isPlatformPermission(permission)).toList();
     }
 
     @Transactional
@@ -131,5 +144,10 @@ public class RoleService extends ServiceImpl<SysRoleMapper, SysRole> {
 
     private static boolean isReservedAdministratorRole(String roleCode) {
         return "SYSTEM_ADMIN".equals(roleCode) || "GLOBAL_SYSTEM_ADMIN".equals(roleCode);
+    }
+
+    private static boolean isPlatformPermission(SysPermission permission) {
+        return permission.getPermissionCode() != null
+                && permission.getPermissionCode().startsWith("platform:");
     }
 }

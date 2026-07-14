@@ -4,9 +4,9 @@ public interface SslRuntimeController {
 
     boolean isHttps();
 
-    void enable(SslKeyStoreMaterial material) throws Exception;
+    SslRuntimeTransition enable(SslKeyStoreMaterial material) throws Exception;
 
-    void disable() throws Exception;
+    SslRuntimeTransition disable() throws Exception;
 
-    void reload(SslKeyStoreMaterial material) throws Exception;
+    SslRuntimeTransition reload(SslKeyStoreMaterial material) throws Exception;
 }

@@ -1,6 +1,7 @@
 package top.hetao.shiyuanticketmp.platform.ssl.controller;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
+import cn.dev33.satoken.annotation.SaCheckRole;
 import cn.dev33.satoken.stp.StpUtil;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -24,6 +25,7 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/admin/platform/ssl")
 @SaCheckPermission("platform:ssl:manage")
+@SaCheckRole("GLOBAL_SYSTEM_ADMIN")
 public class PlatformSslAdminController {
 
     private final PlatformSslService service;

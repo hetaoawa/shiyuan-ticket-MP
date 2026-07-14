@@ -14,6 +14,7 @@ import top.hetao.shiyuanticketmp.platform.ssl.repository.PlatformSslState;
 import top.hetao.shiyuanticketmp.platform.ssl.repository.StoredCertificate;
 import top.hetao.shiyuanticketmp.platform.ssl.runtime.SslMaterialProvider;
 import top.hetao.shiyuanticketmp.platform.ssl.runtime.SslRuntimeController;
+import top.hetao.shiyuanticketmp.platform.ssl.runtime.SslRuntimeTransition;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -129,6 +130,7 @@ public class PlatformSslService {
 
     private void executeStateChange(long operationId, boolean enabled, long actorId) {
         PlatformSslState previous = requireState();
+        SslRuntimeTransition runtimeTransition = null;
         try {
             repository.updateState(enabled, previous.effectiveEnabled(), previous.currentCertificateVersionId(),
                     previous.domainName(), null, actorId);
@@ -136,26 +138,28 @@ public class PlatformSslService {
                 if (previous.currentCertificateVersionId() == null) {
                     throw new IllegalStateException("Upload a valid certificate before enabling HTTPS");
                 }
-                runtimeController.enable(materialProvider.load(previous.currentCertificateVersionId()));
+                runtimeTransition = runtimeController.enable(
+                        materialProvider.load(previous.currentCertificateVersionId()));
             } else {
-                runtimeController.disable();
+                runtimeTransition = runtimeController.disable();
             }
             repository.updateState(enabled, enabled, previous.currentCertificateVersionId(),
                     previous.domainName(), null, actorId);
             repository.completeOperation(operationId, true, enabled ? "HTTPS enabled" : "HTTP enabled");
+            runtimeTransition.commit();
         } catch (Exception e) {
-            repository.updateState(previous.desiredEnabled(), previous.effectiveEnabled(),
-                    previous.currentCertificateVersionId(), previous.domainName(), rootMessage(e), actorId);
-            repository.completeOperation(operationId, false, rootMessage(e));
+            rollbackRuntime(runtimeTransition, e);
+            restoreState(operationId, previous, actorId, e);
         }
     }
 
     private void executeCertificateInstall(long operationId, long certificateId, String domain,
                                            Long actorId, boolean legacyImport) {
         PlatformSslState previous = requireState();
+        SslRuntimeTransition runtimeTransition = null;
         try {
             if (previous.effectiveEnabled()) {
-                runtimeController.reload(materialProvider.load(certificateId));
+                runtimeTransition = runtimeController.reload(materialProvider.load(certificateId));
             }
             repository.activateCertificate(certificateId);
             repository.updateState(previous.desiredEnabled(), previous.effectiveEnabled(), certificateId,
@@ -163,11 +167,51 @@ public class PlatformSslService {
             if (legacyImport) repository.markLegacyImported();
             repository.completeOperation(operationId, true,
                     previous.effectiveEnabled() ? "Certificate hot-reloaded" : "Certificate staged");
+            if (runtimeTransition != null) runtimeTransition.commit();
         } catch (Exception e) {
-            repository.failCertificate(certificateId);
+            rollbackRuntime(runtimeTransition, e);
+            restoreCertificateState(certificateId, previous, legacyImport, e);
+            restoreState(operationId, previous, actorId, e);
+        }
+    }
+
+    private void rollbackRuntime(SslRuntimeTransition transition, Exception failure) {
+        if (transition == null) return;
+        try {
+            transition.rollback();
+        } catch (Exception rollbackFailure) {
+            failure.addSuppressed(rollbackFailure);
+        }
+    }
+
+    private void restoreCertificateState(long certificateId, PlatformSslState previous,
+                                         boolean legacyImport, Exception failure) {
+        try {
+            repository.restoreCertificate(previous.currentCertificateVersionId(), certificateId);
+        } catch (Exception restoreFailure) {
+            failure.addSuppressed(restoreFailure);
+        }
+        if (legacyImport) {
+            try {
+                repository.updateLegacyImported(previous.legacyImportCompleted());
+            } catch (Exception restoreFailure) {
+                failure.addSuppressed(restoreFailure);
+            }
+        }
+    }
+
+    private void restoreState(long operationId, PlatformSslState previous, Long actorId, Exception failure) {
+        String message = rootMessage(failure);
+        try {
             repository.updateState(previous.desiredEnabled(), previous.effectiveEnabled(),
-                    previous.currentCertificateVersionId(), previous.domainName(), rootMessage(e), actorId);
-            repository.completeOperation(operationId, false, rootMessage(e));
+                    previous.currentCertificateVersionId(), previous.domainName(), message, actorId);
+        } catch (Exception restoreFailure) {
+            failure.addSuppressed(restoreFailure);
+        }
+        try {
+            repository.completeOperation(operationId, false, message);
+        } catch (Exception restoreFailure) {
+            failure.addSuppressed(restoreFailure);
         }
     }
 

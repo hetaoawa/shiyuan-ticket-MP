@@ -31,18 +31,19 @@ public class AiParsePolicyService {
 
     public Object execute(Long tenantId, String userId, String mode, String schemaVersion,
                           String normalizedInput, Supplier<String> operation) {
-        String scope = tenantId + ":" + userId + ":" + mode + ":" + schemaVersion;
-        String blockKey = "ai:parse:blocked:" + scope;
+        String principalScope = tenantId + ":" + userId;
+        String cacheScope = principalScope + ":" + mode + ":" + schemaVersion;
+        String blockKey = "ai:parse:blocked:" + principalScope;
         Long blockTtl = redis.getExpire(blockKey, TimeUnit.SECONDS);
         if (blockTtl != null && blockTtl > 0) {
             throw AiPolicyException.blocked(blockTtl);
         }
 
-        String cacheKey = "ai:parse:cache:" + scope + ":" + sha256(normalizedInput);
+        String cacheKey = "ai:parse:cache:" + cacheScope + ":" + sha256(normalizedInput);
         String cached = redis.opsForValue().get(cacheKey);
         if (cached != null) {
             if (CACHE_418_MARKER.equals(cached)) {
-                recordRejection(scope);
+                recordRejection(principalScope);
                 throw AiParseService.AiParseException.invalidInput();
             }
             try {
@@ -52,7 +53,7 @@ public class AiParsePolicyService {
             }
         }
 
-        String rateKey = "ai:parse:rate:" + scope;
+        String rateKey = "ai:parse:rate:" + principalScope;
         Long count = redis.opsForValue().increment(rateKey);
         if (count != null && count == 1) {
             redis.expire(rateKey, RATE_WINDOW_SECONDS, TimeUnit.SECONDS);
@@ -70,7 +71,7 @@ public class AiParsePolicyService {
         } catch (AiParseService.AiParseException e) {
             if (e.isInvalidInput()) {
                 redis.opsForValue().set(cacheKey, CACHE_418_MARKER, CACHE_TTL_SECONDS, TimeUnit.SECONDS);
-                recordRejection(scope);
+                recordRejection(principalScope);
             }
             throw e;
         } catch (RuntimeException e) {
