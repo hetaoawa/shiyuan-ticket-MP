@@ -15,8 +15,12 @@ import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.service.WorkOrderCommentService;
+import top.hetao.shiyuanticketmp.workorder.batch.BatchCreateResult;
+import top.hetao.shiyuanticketmp.workorder.batch.BatchIdempotencyConflictException;
+import top.hetao.shiyuanticketmp.workorder.batch.WorkOrderBatchCreateService;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.AddCommentRequest;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.BatchAssignRequest;
+import top.hetao.shiyuanticketmp.workorder.controller.dto.BatchCreateWorkOrderRequest;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.CommentVO;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.CreateWorkOrderRequest;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.ResubmitWorkOrderRequest;
@@ -51,17 +55,20 @@ public class WorkOrderController {
     private final UserService userService;
     private final SysRoleMapper roleMapper;
     private final TenantService tenantService;
+    private final WorkOrderBatchCreateService batchCreateService;
 
     public WorkOrderController(WorkOrderService workOrderService,
                                WorkOrderCommentService commentService,
                                UserService userService,
                                SysRoleMapper roleMapper,
-                               TenantService tenantService) {
+                               TenantService tenantService,
+                               WorkOrderBatchCreateService batchCreateService) {
         this.workOrderService = workOrderService;
         this.commentService = commentService;
         this.userService = userService;
         this.roleMapper = roleMapper;
         this.tenantService = tenantService;
+        this.batchCreateService = batchCreateService;
     }
 
     /**
@@ -113,6 +120,28 @@ public class WorkOrderController {
         result.put("message", "创建成功");
         result.put("data", created);
         return result;
+    }
+
+    @PostMapping("/batch")
+    @SaCheckPermission("workorder:create")
+    public ResponseEntity<Map<String, Object>> createBatch(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody BatchCreateWorkOrderRequest request) {
+        try {
+            BatchCreateResult created = batchCreateService.create(
+                    request, idempotencyKey, StpUtil.getLoginIdAsLong());
+            Map<String, Object> data = new HashMap<>();
+            data.put("workOrderIds", created.workOrderIds());
+            data.put("replayed", created.replayed());
+            return ResponseEntity.ok(Map.of(
+                    "code", 200,
+                    "message", created.replayed() ? "幂等重放成功" : "批量创建成功",
+                    "data", data));
+        } catch (BatchIdempotencyConflictException e) {
+            return ResponseEntity.status(409).body(Map.of(
+                    "code", 409,
+                    "message", e.getMessage()));
+        }
     }
 
     /**
