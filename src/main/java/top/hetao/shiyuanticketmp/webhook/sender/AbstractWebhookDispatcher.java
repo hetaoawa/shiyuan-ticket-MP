@@ -5,6 +5,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterRecord;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpResponse;
@@ -63,18 +65,24 @@ public abstract class AbstractWebhookDispatcher {
 
         try {
             byte[] body = buildRequestBody(eventId, eventType, payload);
-            doDispatchWithRetry(eventType, eventId, body);
+            if (payload instanceof WorkOrderEvent event) {
+                doDispatchWithRetry(eventType, eventId, body,
+                        event.getConversationId(), event.getSenderStaffId());
+            } else {
+                doDispatchWithRetry(eventType, eventId, body);
+            }
         } catch (Exception e) {
             log.error("[{}] payload 序列化失败，eventId={}", channelName(), eventId, e);
         }
     }
 
     /**
-     * 原始字节重投（死信补偿）。
+     * 同步原始字节重投（死信补偿）。每次均重新读取当前配置并构造 URL/签名。
+     * 失败只返回结果，不再落一条重复死信。
      */
-    public void dispatchRaw(String eventType, String eventId, byte[] rawBody) {
+    public DispatchResult retryRaw(String eventType, String eventId, byte[] rawBody) {
         log.info("[{}][补偿] 开始重投 eventId={} type={}", channelName(), eventId, eventType);
-        doDispatchWithRetry(eventType, eventId, rawBody);
+        return executeWithRetry(eventType, eventId, rawBody, false, null, null);
     }
 
     // ----------------------------------------------------------------
@@ -84,6 +92,9 @@ public abstract class AbstractWebhookDispatcher {
     /** 通道名称，用于日志前缀 */
     protected abstract String channelName();
 
+    /** 写入死信记录的稳定通道代码。 */
+    protected abstract String channelCode();
+
     /** 构造完整的请求 URL（含查询参数） */
     protected abstract String buildRequestUrl();
 
@@ -92,7 +103,8 @@ public abstract class AbstractWebhookDispatcher {
                                                 Object payload) throws Exception;
 
     /** 发送单次 HTTP 请求 */
-    protected abstract HttpResponse<String> doSend(String url, byte[] body) throws Exception;
+    protected abstract HttpResponse<String> doSend(String url, byte[] body,
+                                                   String eventId) throws Exception;
 
     /** 判断响应是否表示成功 */
     protected abstract boolean isSuccess(HttpResponse<String> response);
@@ -102,19 +114,36 @@ public abstract class AbstractWebhookDispatcher {
     // ----------------------------------------------------------------
 
     protected void doDispatchWithRetry(String eventType, String eventId, byte[] body) {
+        doDispatchWithRetry(eventType, eventId, body, null, null);
+    }
+
+    protected void doDispatchWithRetry(String eventType, String eventId, byte[] body,
+                                       String conversationId, String senderStaffId) {
+        executeWithRetry(eventType, eventId, body, true, conversationId, senderStaffId);
+    }
+
+    private DispatchResult executeWithRetry(String eventType, String eventId, byte[] body,
+                                             boolean persistOnFailure,
+                                             String conversationId, String senderStaffId) {
         int attempt = 0;
         String lastError = "未知错误";
-        String url = buildRequestUrl();
+        String url = channelName() + ":configuration-error";
+        Integer lastStatusCode = null;
 
         while (attempt <= maxRetry) {
             attempt++;
+            lastStatusCode = null;
             try {
-                HttpResponse<String> response = doSend(url, body);
+                // URL and credential validation are deliberately lazy and happen inside the
+                // retry boundary so a disabled/unused channel never blocks application startup.
+                url = buildRequestUrl();
+                HttpResponse<String> response = doSend(url, body, eventId);
+                lastStatusCode = response.statusCode();
 
                 if (isSuccess(response)) {
                     log.info("[{}] 投递成功 eventId={} attempt={} status={}",
                             channelName(), eventId, attempt, response.statusCode());
-                    return;
+                    return DispatchResult.succeeded(response.statusCode());
                 }
 
                 lastError = "HTTP " + response.statusCode() + ": " + truncate(response.body());
@@ -144,7 +173,11 @@ public abstract class AbstractWebhookDispatcher {
             sleep(backoff);
         }
 
-        persistDeadLetter(eventId, eventType, url, body, lastError, attempt);
+        if (persistOnFailure) {
+            persistDeadLetter(eventId, eventType, url, body, lastError, attempt,
+                    conversationId, senderStaffId);
+        }
+        return DispatchResult.failed(lastStatusCode, lastError);
     }
 
     // ----------------------------------------------------------------
@@ -159,11 +192,16 @@ public abstract class AbstractWebhookDispatcher {
 
     protected void persistDeadLetter(String eventId, String eventType,
                                       String targetUrl, byte[] body,
-                                      String lastError, int attempts) {
+                                      String lastError, int attempts,
+                                      String conversationId, String senderStaffId) {
         try {
             String payloadStr = new String(body, StandardCharsets.UTF_8);
             WebhookDeadLetterRecord record = WebhookDeadLetterRecord.of(
                     eventId, eventType, targetUrl, payloadStr, lastError, attempts);
+            record.setTenantId(TenantContext.requireTenantId());
+            record.setChannel(channelCode());
+            record.setConversationId(conversationId);
+            record.setSenderStaffId(senderStaffId);
             deadLetterService.save(record);
         } catch (Exception e) {
             log.error("[{}][死信] 落库异常！eventId={}", channelName(), eventId, e);

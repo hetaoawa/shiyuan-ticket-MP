@@ -2,11 +2,15 @@ package top.hetao.shiyuanticketmp.workorder.listener;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
 import top.hetao.shiyuanticketmp.webhook.sender.ChannelTarget;
 import top.hetao.shiyuanticketmp.webhook.sender.WebhookMessageAggregator;
+import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderCommentEvent;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
@@ -30,17 +34,29 @@ public class WorkOrderWebhookListener {
     private static final Logger log = LoggerFactory.getLogger(WorkOrderWebhookListener.class);
 
     private final WebhookMessageAggregator aggregator;
+    private final TenantIntegrationSettingService integrationSettingService;
+    private final TenantService tenantService;
 
-    public WorkOrderWebhookListener(WebhookMessageAggregator aggregator) {
+    public WorkOrderWebhookListener(WebhookMessageAggregator aggregator,
+                                    TenantIntegrationSettingService integrationSettingService,
+                                    TenantService tenantService) {
         this.aggregator = aggregator;
+        this.integrationSettingService = integrationSettingService;
+        this.tenantService = tenantService;
     }
 
     /**
      * 工单状态变更事件处理。
      */
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
+        try (TenantContext.Scope ignored = TenantContext.useTenant(event.getTenantId())) {
+            handleWorkOrderStateChanged(event);
+        }
+    }
+
+    private void handleWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
         WorkOrder order = event.getWorkOrder();
         String action = event.getAction();
 
@@ -49,8 +65,16 @@ public class WorkOrderWebhookListener {
             log.debug("[WebHook] 事件无需推送 action={} orderId={}", action, order.getId());
             return;
         }
+        if (!isChannelEnabled(action, target, order)) {
+            log.info("[WebHook] 租户外部通道已关闭 action={} orderId={} tenantId={} target={}",
+                    action, order.getId(), order.getTenantId(), target);
+            return;
+        }
 
+        String tenantCode = requireTenantCode(event.getTenantId());
         WorkOrderEvent payload = WorkOrderEvent.of(order, event.getExtra());
+        payload.setTenantId(event.getTenantId());
+        payload.setTenantCode(tenantCode);
         payload.setTargetChannels(target);
 
         log.info("[WebHook] 事件入队聚合器 action={} orderId={} target={}", action, order.getId(), target);
@@ -62,9 +86,15 @@ public class WorkOrderWebhookListener {
      *
      * <p>评论事件仅推送给货主侧（外部提交的工单）。
      */
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderComment(WorkOrderCommentEvent event) {
+        try (TenantContext.Scope ignored = TenantContext.useTenant(event.getTenantId())) {
+            handleWorkOrderComment(event);
+        }
+    }
+
+    private void handleWorkOrderComment(WorkOrderCommentEvent event) {
         WorkOrder order = event.getWorkOrder();
         if (order == null) {
             return;
@@ -76,9 +106,12 @@ public class WorkOrderWebhookListener {
             return;
         }
 
+        String tenantCode = requireTenantCode(event.getTenantId());
         WorkOrderEvent payload = new WorkOrderEvent();
         payload.setEventId(UUID.randomUUID().toString());
         payload.setWorkOrderId(order.getId());
+        payload.setTenantId(event.getTenantId());
+        payload.setTenantCode(tenantCode);
         payload.setTitle(order.getTitle());
         payload.setType(order.getType());
         payload.setTrackingNo(order.getTrackingNo());
@@ -98,6 +131,15 @@ public class WorkOrderWebhookListener {
 
         log.info("[WebHook] 评论事件入队 orderId={} target=CARGO_OWNER", order.getId());
         aggregator.submit(payload);
+    }
+
+    private String requireTenantCode(Long tenantId) {
+        String tenantCode = tenantService.getTenantCode(tenantId);
+        if (tenantCode == null || tenantCode.isBlank()) {
+            throw new IllegalStateException(
+                    "Webhook work-order event requires tenantCode: tenantId=" + tenantId);
+        }
+        return tenantCode;
     }
 
     /**
@@ -128,5 +170,17 @@ public class WorkOrderWebhookListener {
             // REJECT、RESUBMIT、FORCE_REJECT 不推送
             default -> null;
         };
+    }
+
+    private boolean isChannelEnabled(String action, ChannelTarget target, WorkOrder order) {
+        if ("ASSIGN".equals(action) && target == ChannelTarget.DINGTALK) {
+            return integrationSettingService.dingTalkPushEnabled(order.getTenantId());
+        }
+        if ("CLOSE".equals(action) && target == ChannelTarget.CARGO_OWNER) {
+            return integrationSettingService.externalCloseCallbackEnabled(order.getTenantId());
+        }
+        // CREATE and comments intentionally keep their existing behavior. The inbound switch
+        // is evaluated before creation, and the close switch only controls completion callbacks.
+        return true;
     }
 }

@@ -67,11 +67,7 @@ public class RoleController {
     @SaCheckPermission("role:delete")
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable Long id) {
-        SysRole role = roleService.getById(id);
-        if (role == null) {
-            throw new top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException("角色不存在: " + id);
-        }
-        roleService.removeById(id);
+        roleService.deleteRole(id);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "角色删除成功");

@@ -3,9 +3,10 @@ package top.hetao.shiyuanticketmp.audit.listener;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
 import top.hetao.shiyuanticketmp.audit.entity.SysAuditLog;
 import top.hetao.shiyuanticketmp.audit.service.AuditLogService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
@@ -32,7 +33,7 @@ public class WorkOrderAuditListener {
         this.objectMapper = objectMapper;
     }
 
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderStateChanged(WorkOrderStateChangedEvent event) {
         WorkOrder order = event.getWorkOrder();
@@ -51,6 +52,7 @@ public class WorkOrderAuditListener {
         auditLog.setAction(event.getAction());
         // operatorId 可能为 null（如系统自动操作），设置默认值 0
         auditLog.setOperatorId(event.getOperatorId() != null ? event.getOperatorId() : 0L);
+        auditLog.setTenantId(event.getTenantId());
 
         try {
             auditLog.setDetail(objectMapper.writeValueAsString(detail));
@@ -59,7 +61,7 @@ public class WorkOrderAuditListener {
         }
 
         try {
-            auditLogService.save(auditLog);
+            auditLogService.saveForTenant(auditLog);
             log.info("[审计] 记录成功 bizType=WORK_ORDER bizId={} action={}", order.getId(), event.getAction());
         } catch (Exception e) {
             log.error("[审计] 记录失败 bizId={} action={}", order.getId(), event.getAction(), e);

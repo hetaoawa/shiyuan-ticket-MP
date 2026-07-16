@@ -2,11 +2,12 @@ package top.hetao.shiyuanticketmp.auth;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.ChangePasswordRequest;
+import top.hetao.shiyuanticketmp.auth.controller.dto.SwitchTenantRequest;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
+import top.hetao.shiyuanticketmp.auth.service.AuthTenantService;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
@@ -22,10 +23,14 @@ public class AuthController {
 
     private final UserService userService;
     private final PasswordEncoder passwordEncoder;
+    private final AuthTenantService authTenantService;
 
-    public AuthController(UserService userService, PasswordEncoder passwordEncoder) {
+    public AuthController(UserService userService,
+                          PasswordEncoder passwordEncoder,
+                          AuthTenantService authTenantService) {
         this.userService = userService;
         this.passwordEncoder = passwordEncoder;
+        this.authTenantService = authTenantService;
     }
 
     /**
@@ -36,12 +41,11 @@ public class AuthController {
      * @return 包含 token 的响应
      */
     @PostMapping("/login")
-    public Map<String, Object> login(@RequestParam String username,
+    public Map<String, Object> login(@RequestParam String tenantCode,
+                                     @RequestParam String username,
                                      @RequestParam String password) {
-        SysUser user = userService.getByUsernameIgnoreTenant(username);
-        if (user == null) {
-            throw new WorkOrderException("用户名或密码错误");
-        }
+        AuthTenantService.ResolvedLogin resolved = authTenantService.resolveLogin(tenantCode, username);
+        SysUser user = resolved.user();
 
         if (!passwordEncoder.matches(password, user.getPassword())) {
             throw new WorkOrderException("用户名或密码错误");
@@ -53,11 +57,7 @@ public class AuthController {
 
         // Sa-Token 登录，loginId 使用用户 ID
         StpUtil.login(user.getId());
-
-        // 将租户 ID 和超管标志写入 Sa-Token 会话
-        StpUtil.getSession().set("tenantId", user.getTenantId());
-        boolean isAdmin = userService.getRoleCodes(user.getId()).contains("SYSTEM_ADMIN");
-        StpUtil.getSession().set("isAdmin", isAdmin);
+        AuthTenantContext context = authTenantService.initializeSession(resolved);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -65,7 +65,8 @@ public class AuthController {
         result.put("token", StpUtil.getTokenValue());
         result.put("userId", user.getId());
         result.put("username", user.getUsername());
-        result.put("tenantId", user.getTenantId());
+        result.put("tenantId", context.activeTenantId());
+        putContext(result, context);
         return result;
     }
 
@@ -90,6 +91,10 @@ public class AuthController {
     public Map<String, Object> me() {
         Long userId = StpUtil.getLoginIdAsLong();
         SysUser user = userService.getByIdIgnoreTenant(userId);
+        if (user == null) {
+            throw new WorkOrderException("用户不存在");
+        }
+        AuthTenantContext context = authTenantService.readContext();
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -99,10 +104,25 @@ public class AuthController {
         result.put("phone", user.getPhone());
         result.put("email", user.getEmail());
         result.put("externalUserId", user.getExternalUserId());
-        result.put("tenantId", user.getTenantId());
+        result.put("tenantId", context.activeTenantId());
+        putContext(result, context);
         result.put("roles", userService.getRoleCodes(userId));
         result.put("permissions", userService.getPermissionCodes(userId));
         result.put("tokenTimeout", StpUtil.getTokenTimeout());
+        return result;
+    }
+
+    @SaCheckLogin
+    @PostMapping("/switch-tenant")
+    public Map<String, Object> switchTenant(@RequestBody SwitchTenantRequest request) {
+        if (request == null) {
+            throw new WorkOrderException("租户参数不能为空");
+        }
+        AuthTenantContext context = authTenantService.switchTenant(request.getTenantId());
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "租户切换成功");
+        putContext(result, context);
         return result;
     }
 
@@ -132,7 +152,7 @@ public class AuthController {
             throw new WorkOrderException("旧密码不正确");
         }
 
-        userService.resetPassword(userId, request.getNewPassword());
+        userService.resetPrincipalPassword(userId, request.getNewPassword());
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
@@ -155,31 +175,19 @@ public class AuthController {
             throw new WorkOrderException("用户不存在");
         }
 
-        boolean hasUpdate = false;
-        LambdaUpdateWrapper<SysUser> wrapper = new LambdaUpdateWrapper<>();
-        wrapper.eq(SysUser::getId, userId);
-
-        if (body.containsKey("nickname") && body.get("nickname") != null) {
-            wrapper.set(SysUser::getNickname, body.get("nickname"));
-            hasUpdate = true;
-        }
-        if (body.containsKey("phone")) {
-            String phone = body.get("phone");
-            wrapper.set(SysUser::getPhone, (phone == null || phone.isBlank()) ? null : phone);
-            hasUpdate = true;
-        }
-        if (body.containsKey("email")) {
-            String email = body.get("email");
-            wrapper.set(SysUser::getEmail, (email == null || email.isBlank()) ? null : email);
-            hasUpdate = true;
-        }
-        if (hasUpdate) {
-            userService.update(wrapper);
-        }
+        userService.updatePrincipalProfile(userId, body);
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
         result.put("message", "个人信息更新成功");
         return result;
+    }
+
+    private static void putContext(Map<String, Object> result, AuthTenantContext context) {
+        result.put("principalTenantId", context.principalTenantId());
+        result.put("activeTenantId", context.activeTenantId());
+        result.put("activeTenantCode", context.activeTenantCode());
+        result.put("activeTenantName", context.activeTenantName());
+        result.put("globalAdmin", context.globalAdmin());
     }
 }

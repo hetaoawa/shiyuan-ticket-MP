@@ -5,6 +5,8 @@ import lombok.Data;
 import lombok.EqualsAndHashCode;
 import top.hetao.shiyuanticketmp.common.entity.BaseEntity;
 
+import java.time.LocalDateTime;
+
 /**
  * 文件元数据实体，对应数据库表 {@code sys_file}。
  *
@@ -15,6 +17,9 @@ import top.hetao.shiyuanticketmp.common.entity.BaseEntity;
 @EqualsAndHashCode(callSuper = true)
 @TableName("sys_file")
 public class SysFile extends BaseEntity {
+
+    public static final String UPLOAD_STATUS_PENDING = "PENDING";
+    public static final String UPLOAD_STATUS_CONFIRMED = "CONFIRMED";
 
     /** 原始文件名 */
     private String originalName;
@@ -39,4 +44,16 @@ public class SysFile extends BaseEntity {
 
     /** 下载地址（可选，缓存用） */
     private String downloadUrl;
+
+    /** 上传生命周期状态：PENDING / CONFIRMED */
+    private String uploadStatus;
+
+    /** 服务端完成对象校验并确认的时间 */
+    private LocalDateTime confirmedAt;
+
+    /** 确认时对象存储返回的 ETag，用于检测确认后的覆盖 */
+    private String etag;
+
+    /** 启用对象版本控制时的版本 ID；未启用时为空 */
+    private String objectVersionId;
 }

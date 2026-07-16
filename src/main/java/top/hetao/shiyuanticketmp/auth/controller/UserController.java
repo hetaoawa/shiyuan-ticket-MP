@@ -1,8 +1,6 @@
 package top.hetao.shiyuanticketmp.auth.controller;
 
-import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.web.bind.annotation.*;
 import top.hetao.shiyuanticketmp.auth.controller.dto.AssignRolesRequest;
@@ -13,7 +11,6 @@ import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,7 +39,7 @@ public class UserController {
         return response;
     }
 
-    @SaCheckLogin
+    @SaCheckPermission("user:view")
     @GetMapping("/simple")
     public Map<String, Object> listSimple() {
         List<SimpleUserDTO> users = userService.listSimpleUsers();
@@ -86,11 +83,7 @@ public class UserController {
     @SaCheckPermission("user:delete")
     @DeleteMapping("/{id}")
     public Map<String, Object> delete(@PathVariable Long id) {
-        SysUser user = userService.getById(id);
-        if (user == null) {
-            throw new WorkOrderException("用户不存在: " + id);
-        }
-        userService.removeById(id);
+        userService.deleteUser(id);
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
         response.put("message", "用户删除成功");
@@ -132,35 +125,4 @@ public class UserController {
         return response;
     }
 
-    /**
-     * 获取租户选项列表（从 sys_user 表中提取不重复的 tenant_id）。
-     *
-     * <p>返回格式：[{ "id": 0, "name": "系统默认" }, { "id": 100, "name": "租户100" }, ...]
-     */
-    @SaCheckPermission("user:view")
-    @GetMapping("/tenants")
-    public Map<String, Object> listTenants() {
-        List<SysUser> users = userService.list(new LambdaQueryWrapper<SysUser>()
-                .select(SysUser::getTenantId)
-                .groupBy(SysUser::getTenantId));
-        List<Map<String, Object>> options = new ArrayList<>();
-        // 始终包含系统默认租户 0
-        Map<String, Object> defaultTenant = new HashMap<>();
-        defaultTenant.put("id", 0L);
-        defaultTenant.put("name", "系统默认");
-        options.add(defaultTenant);
-        for (SysUser u : users) {
-            Long tid = u.getTenantId();
-            if (tid != null && tid != 0L) {
-                Map<String, Object> opt = new HashMap<>();
-                opt.put("id", tid);
-                opt.put("name", "租户" + tid);
-                options.add(opt);
-            }
-        }
-        Map<String, Object> response = new HashMap<>();
-        response.put("code", 200);
-        response.put("data", options);
-        return response;
-    }
 }

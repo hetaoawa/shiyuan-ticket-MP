@@ -2,13 +2,15 @@ package top.hetao.shiyuanticketmp.webhook.sender;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 import top.hetao.shiyuanticketmp.webhook.deadletter.WebhookDeadLetterService;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderEvent;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
+import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
-import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -39,82 +41,22 @@ import java.util.UUID;
 @Component
 public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
-    @Value("${webhook.cargo-owner.url}")
+    public static final String CHANNEL_CODE = "CARGO_OWNER";
+
     private String targetUrl;
 
-    @Value("${webhook.cargo-owner.authorization}")
     private String authorization;
 
-    @Value("${webhook.cargo-owner.work-order-detail-base-url:}")
     private String workOrderDetailBaseUrl;
+    private final TenantIntegrationResolver integrationResolver;
 
     private String normalizedUrl;
-    private String normalizedDetailBaseUrl;
 
-    public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+    @Autowired
+    public CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService,
+                                TenantIntegrationResolver integrationResolver) {
         super(objectMapper, deadLetterService);
-    }
-
-    @PostConstruct
-    void init() {
-        if (targetUrl == null || targetUrl.isBlank()) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 未配置或为空");
-        }
-        String trimmed = targetUrl.trim();
-        if (trimmed.startsWith("\"") || trimmed.startsWith("'")
-                || trimmed.endsWith("\"") || trimmed.endsWith("'")) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 不应包含引号，当前值: " + targetUrl);
-        }
-        URI uri;
-        try {
-            uri = URI.create(trimmed);
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 格式非法: " + targetUrl, e);
-        }
-        String scheme = uri.getScheme();
-        if (scheme == null) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少协议（scheme），当前值: " + targetUrl);
-        }
-        if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 协议必须为 http/https，当前值: " + targetUrl);
-        }
-        if (uri.getHost() == null || uri.getHost().isBlank()) {
-            throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.url 缺少主机名（host），当前值: " + targetUrl);
-        }
-        normalizedUrl = trimmed;
-        log.info("[CargoOwner] 货主 WebHook URL 已校验: {}", normalizedUrl);
-
-        // 初始化详情链接 base URL（可选，不配置则不发送处理链接）
-        if (workOrderDetailBaseUrl != null && !workOrderDetailBaseUrl.isBlank()) {
-            String detailTrimmed = workOrderDetailBaseUrl.trim();
-            if (detailTrimmed.startsWith("\"") || detailTrimmed.startsWith("'")
-                    || detailTrimmed.endsWith("\"") || detailTrimmed.endsWith("'")) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 不应包含引号，当前值: " + workOrderDetailBaseUrl);
-            }
-            URI detailUri;
-            try {
-                detailUri = URI.create(detailTrimmed);
-            } catch (IllegalArgumentException e) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 格式非法: " + workOrderDetailBaseUrl, e);
-            }
-            String detailScheme = detailUri.getScheme();
-            if (detailScheme == null) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 缺少协议（scheme），当前值: " + workOrderDetailBaseUrl);
-            }
-            if (!"http".equalsIgnoreCase(detailScheme) && !"https".equalsIgnoreCase(detailScheme)) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 协议必须为 http/https，当前值: " + workOrderDetailBaseUrl);
-            }
-            if (detailUri.getHost() == null || detailUri.getHost().isBlank()) {
-                throw new IllegalArgumentException("[CargoOwner] webhook.cargo-owner.work-order-detail-base-url 缺少主机名（host），当前值: " + workOrderDetailBaseUrl);
-            }
-            normalizedDetailBaseUrl = detailTrimmed.endsWith("/")
-                    ? detailTrimmed.substring(0, detailTrimmed.length() - 1)
-                    : detailTrimmed;
-            log.info("[CargoOwner] 工单详情 base URL 已校验: {}", normalizedDetailBaseUrl);
-        } else {
-            normalizedDetailBaseUrl = null;
-            log.info("[CargoOwner] 未配置工单详情 base URL，消息中不包含处理链接");
-        }
+        this.integrationResolver = integrationResolver;
     }
 
     @Override
@@ -123,25 +65,37 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     }
 
     @Override
+    protected String channelCode() {
+        return CHANNEL_CODE;
+    }
+
+    @Override
     protected String buildRequestUrl() {
+        if (integrationResolver != null) loadConfig(TenantContext.requireTenantId());
+        requireNonBlank(authorization, "租户货主接口集成的 authorization");
+        normalizedUrl = validateHttpUrl(targetUrl, "租户货主接口集成的推送地址", true);
+        validateHttpUrl(workOrderDetailBaseUrl,
+                "租户货主接口集成的工单详情地址", false);
         return normalizedUrl;
     }
 
     @Override
     protected byte[] buildRequestBody(String eventId, String eventType,
                                        Object payload) throws Exception {
+        if (payload instanceof WorkOrderEvent event) loadConfig(event.getTenantId());
         String message = formatSingleText(eventType, payload);
         Map<String, Object> body = buildMessageBody(message, null, null);
         return objectMapper.writeValueAsBytes(body);
     }
 
     @Override
-    protected HttpResponse<String> doSend(String url, byte[] body) throws Exception {
+    protected HttpResponse<String> doSend(String url, byte[] body, String eventId) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .header("Content-Type", "application/json; charset=UTF-8")
                 .header("Authorization", authorization)
+                .header("X-Event-Id", eventId)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body))
                 .build();
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
@@ -168,36 +122,40 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
     /**
      * 批量投递：将多条事件合并为一条纯文本消息。
      *
-     * <p>取第一条事件的 conversationId/senderStaffId 作为 room_id/senderStaffId。
-     * 若同一批次涉及多个群，以第一条为准（实际场景中同一群的消息通常在同一窗口内）。
+     * <p>取该批次稳定的 conversationId/senderStaffId 作为 room_id/senderStaffId。
+     * 聚合器按租户、群和接收人隔离批次，因此这里不会混合不同外部接收目标。
      */
-    public void dispatchBatch(List<WorkOrderEvent> events) {
+    public synchronized void dispatchBatch(List<WorkOrderEvent> events) {
         if (events == null || events.isEmpty()) return;
 
         String eventId = UUID.randomUUID().toString();
         log.info("[CargoOwner] 批量投递 eventId={} 条数={}", eventId, events.size());
 
         try {
-            String message = formatBatchText(events);
-
-            // 从事件中取群ID和发送人ID
-            String roomId = null;
-            String staffId = null;
-            for (WorkOrderEvent e : events) {
-                if (roomId == null && e.getConversationId() != null) {
-                    roomId = e.getConversationId();
-                }
-                if (staffId == null && e.getSenderStaffId() != null) {
-                    staffId = e.getSenderStaffId();
-                }
-                if (roomId != null && staffId != null) break;
-            }
-
-            byte[] body = objectMapper.writeValueAsBytes(buildMessageBody(message, roomId, staffId));
-            doDispatchWithRetry("BATCH", eventId, body);
+            String roomId = firstConversationId(events);
+            String staffId = firstSenderStaffId(events);
+            byte[] body = prepareBatchBody(events);
+            doDispatchWithRetry("BATCH", eventId, body, roomId, staffId);
         } catch (Exception e) {
             log.error("[CargoOwner] 批量消息序列化失败 eventId={}", eventId, e);
         }
+    }
+
+    /** Builds the exact immutable HTTP body used by the aggregate dispatcher and dead-letter fallback. */
+    byte[] prepareBatchBody(List<WorkOrderEvent> events) throws Exception {
+        loadConfig(events.get(0).getTenantId());
+        return objectMapper.writeValueAsBytes(buildMessageBody(
+                formatBatchText(events), firstConversationId(events), firstSenderStaffId(events)));
+    }
+
+    private String firstConversationId(List<WorkOrderEvent> events) {
+        return events.stream().map(WorkOrderEvent::getConversationId)
+                .filter(value -> value != null && !value.isBlank()).findFirst().orElse(null);
+    }
+
+    private String firstSenderStaffId(List<WorkOrderEvent> events) {
+        return events.stream().map(WorkOrderEvent::getSenderStaffId)
+                .filter(value -> value != null && !value.isBlank()).findFirst().orElse(null);
     }
 
     // ----------------------------------------------------------------
@@ -214,6 +172,17 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             body.put("senderStaffId", staffId);
         }
         return body;
+    }
+    CargoOwnerDispatcher(ObjectMapper objectMapper, WebhookDeadLetterService deadLetterService) {
+        super(objectMapper, deadLetterService); this.integrationResolver = null;
+    }
+
+    private void loadConfig(Long tenantId) {
+        if (integrationResolver == null) return;
+        var config = integrationResolver.resolve(tenantId, IntegrationType.CARGO_OWNER);
+        if (!config.enabled()) throw new IllegalStateException("Cargo owner integration is disabled");
+        targetUrl = config.text("url"); authorization = config.secret("authorization");
+        workOrderDetailBaseUrl = config.text("workOrderDetailBaseUrl");
     }
 
     // ----------------------------------------------------------------
@@ -252,8 +221,9 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
             }
 
             // 处理链接
-            if (normalizedDetailBaseUrl != null) {
-                String detailUrl = normalizedDetailBaseUrl + "/workorder/detail/" + e.getWorkOrderId();
+            String detailUrl = WorkOrderDetailUrlBuilder.build(
+                    workOrderDetailBaseUrl, e.getWorkOrderId(), e.getTenantCode());
+            if (detailUrl != null) {
                 sb.append("处理链接：").append(detailUrl).append("\n");
             }
         }
@@ -286,5 +256,45 @@ public class CargoOwnerDispatcher extends AbstractWebhookDispatcher {
 
     private String nvl(String s) {
         return s != null ? s : "";
+    }
+
+    private void requireNonBlank(String value, String property) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 未配置或为空");
+        }
+    }
+
+    private String validateHttpUrl(String value, String property, boolean required) {
+        if (value == null || value.isBlank()) {
+            if (required) {
+                throw new IllegalArgumentException("[CargoOwner] " + property + " 未配置或为空");
+            }
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.startsWith("\"") || trimmed.startsWith("'")
+                || trimmed.endsWith("\"") || trimmed.endsWith("'")) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 不应包含引号");
+        }
+        URI uri;
+        try {
+            uri = URI.create(trimmed);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 格式非法", e);
+        }
+        if ((uri.getScheme() == null
+                || (!"http".equalsIgnoreCase(uri.getScheme())
+                && !"https".equalsIgnoreCase(uri.getScheme())))
+                || uri.getHost() == null || uri.getHost().isBlank()) {
+            throw new IllegalArgumentException("[CargoOwner] " + property + " 必须是完整 http/https URL");
+        }
+        return trimmed;
+    }
+    @Override
+    public synchronized void dispatch(String eventType, Object payload) { super.dispatch(eventType, payload); }
+
+    @Override
+    public synchronized DispatchResult retryRaw(String eventType, String eventId, byte[] rawBody) {
+        return super.retryRaw(eventType, eventId, rawBody);
     }
 }

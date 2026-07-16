@@ -9,13 +9,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.comment.entity.WorkOrderComment;
 import top.hetao.shiyuanticketmp.workorder.comment.mapper.WorkOrderCommentMapper;
 import top.hetao.shiyuanticketmp.workorder.controller.dto.CommentVO;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderCommentEvent;
 import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
-import top.hetao.shiyuanticketmp.workorder.mapper.WorkOrderMapper;
+import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,14 +29,18 @@ import java.util.List;
 public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper, WorkOrderComment> {
 
     private final SysUserMapper sysUserMapper;
-    private final WorkOrderMapper workOrderMapper;
     private final ApplicationEventPublisher eventPublisher;
+    private final WorkOrderService workOrderService;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
-    public WorkOrderCommentService(SysUserMapper sysUserMapper, WorkOrderMapper workOrderMapper,
-                                   ApplicationEventPublisher eventPublisher) {
+    public WorkOrderCommentService(SysUserMapper sysUserMapper,
+                                   ApplicationEventPublisher eventPublisher,
+                                   WorkOrderService workOrderService,
+                                   TenantLifecycleGuard tenantLifecycleGuard) {
         this.sysUserMapper = sysUserMapper;
-        this.workOrderMapper = workOrderMapper;
         this.eventPublisher = eventPublisher;
+        this.workOrderService = workOrderService;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     /**
@@ -49,12 +55,17 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
      */
     @Transactional
     public WorkOrderComment addComment(Long workOrderId, String content, Long commenterId,
-                                       String commentType, String attachments) {
+                                       String commentType, String attachments,
+                                       List<String> commenterRoles) {
         if (content == null || content.isBlank()) {
             throw new WorkOrderException("评论内容不能为空");
         }
 
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
+        WorkOrder workOrder = workOrderService.getByIdWithAccessCheck(
+                workOrderId, commenterId, commenterRoles);
         WorkOrderComment comment = new WorkOrderComment();
+        comment.setTenantId(workOrder.getTenantId());
         comment.setWorkOrderId(workOrderId);
         comment.setContent(content);
         comment.setCommenterId(commenterId);
@@ -63,10 +74,8 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
         save(comment);
 
         // 发布评论事件（用于 WebHook 推送）
-        WorkOrder workOrder = workOrderMapper.selectById(workOrderId);
-        if (workOrder != null) {
-            eventPublisher.publishEvent(new WorkOrderCommentEvent(this, workOrder, comment));
-        }
+        eventPublisher.publishEvent(new WorkOrderCommentEvent(
+                this, workOrder.getTenantId(), workOrder, comment));
 
         return comment;
     }
@@ -81,6 +90,7 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
      */
     @Transactional(readOnly = true)
     public IPage<WorkOrderComment> listByWorkOrder(Long workOrderId, int page, int pageSize) {
+        workOrderService.getById(workOrderId);
         LambdaQueryWrapper<WorkOrderComment> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(WorkOrderComment::getWorkOrderId, workOrderId)
                .orderByDesc(WorkOrderComment::getCreatedAt);
@@ -101,7 +111,7 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
 
         List<CommentVO> voList = new ArrayList<>();
         for (WorkOrderComment comment : commentPage.getRecords()) {
-            SysUser user = sysUserMapper.selectByIdIgnoreTenant(comment.getCommenterId());
+            SysUser user = sysUserMapper.selectById(comment.getCommenterId());
             String username = user != null ? user.getUsername() : null;
             String nickname = user != null ? user.getNickname() : null;
             voList.add(CommentVO.from(comment, username, nickname));
@@ -117,6 +127,7 @@ public class WorkOrderCommentService extends ServiceImpl<WorkOrderCommentMapper,
      */
     @Transactional(readOnly = true)
     public List<WorkOrderComment> listAllByWorkOrder(Long workOrderId) {
+        workOrderService.getById(workOrderId);
         LambdaQueryWrapper<WorkOrderComment> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(WorkOrderComment::getWorkOrderId, workOrderId)
                .orderByAsc(WorkOrderComment::getCreatedAt);

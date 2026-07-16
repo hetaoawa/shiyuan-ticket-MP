@@ -9,8 +9,11 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import top.hetao.shiyuanticketmp.auth.exception.InvalidAuthSessionException;
+import top.hetao.shiyuanticketmp.auth.service.AuthTenantService;
 import top.hetao.shiyuanticketmp.auth.service.UserService;
 import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.workorder.exception.WorkOrderException;
 
 import java.util.List;
 
@@ -28,55 +31,63 @@ import java.util.List;
 @Configuration
 public class SaTokenConfig implements WebMvcConfigurer {
 
-    /** Sa-Token 登录校验排除路径 */
-    private static final String[] AUTH_EXCLUDE_PATHS = {
-            "/api/auth/**",
-            "/api/webhook",
-            "/api/webhook/**",
-            "/error",
-            "/favicon.ico"
-    };
-
-    /** 租户上下文拦截器排除路径（仅排除登录，/api/auth/me 和 /api/auth/logout 需要租户上下文） */
-    private static final String[] TENANT_EXCLUDE_PATHS = {
-            "/api/auth/login",
-            "/api/webhook",
-            "/api/webhook/**",
-            "/error",
-            "/favicon.ico"
-    };
-
+    private final AuthTenantService authTenantService;
     private final InternalSignatureInterceptor internalSignatureInterceptor;
 
-    public SaTokenConfig(InternalSignatureInterceptor internalSignatureInterceptor) {
+    public SaTokenConfig(AuthTenantService authTenantService,
+                         InternalSignatureInterceptor internalSignatureInterceptor) {
+        this.authTenantService = authTenantService;
         this.internalSignatureInterceptor = internalSignatureInterceptor;
     }
 
+    /** Sa-Token 登录校验排除路径 */
+    private static final String[] AUTH_EXCLUDE_PATHS = {
+            "/api/auth/login",
+            "/api/auth/tenant-options",
+            "/api/webhook/cargo-owner",
+            "/api/platform/ssl/deploy/import",
+            "/error",
+            "/favicon.ico"
+    };
+
+    /** 租户上下文拦截器排除路径（已停用租户的既有会话仍应能正常登出） */
+    private static final String[] TENANT_EXCLUDE_PATHS = {
+            "/api/auth/login",
+            "/api/auth/tenant-options",
+            "/api/auth/logout",
+            "/api/webhook/cargo-owner",
+            "/api/platform/ssl/deploy/import",
+            "/error",
+            "/favicon.ico"
+    };
+
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        // 内部签名校验拦截器（最先执行，order=-1）
+        // 内部签名校验拦截器（最先执行，order=-2）
         registry.addInterceptor(internalSignatureInterceptor)
                 .addPathPatterns("/api/**")
                 .excludePathPatterns(
                         "/api/webhook",
                         "/api/webhook/**",
+                        "/api/platform/ssl/deploy/import",
                         "/error",
                         "/favicon.ico"
                 )
+                .order(-2);
+
+        // 必须先建立租户上下文，随后执行的鉴权注解及角色/权限查询才能受到租户隔离。
+        registry.addInterceptor(new TenantInterceptor(authTenantService))
+                .addPathPatterns("/**")
+                .excludePathPatterns(TENANT_EXCLUDE_PATHS)
                 .order(-1);
 
         // Sa-Token 登录校验拦截器
         registry.addInterceptor(new SaInterceptor(handle -> {
-                    // checkLogin 会校验当前请求是否已登录
+                    StpUtil.checkLogin();
                 }))
                 .addPathPatterns("/**")
-                .excludePathPatterns(AUTH_EXCLUDE_PATHS);
-
-        // 租户上下文拦截器（在 Sa-Token 之后执行，确保已登录）
-        registry.addInterceptor(new TenantInterceptor())
-                .addPathPatterns("/**")
-                .excludePathPatterns(TENANT_EXCLUDE_PATHS)
-                .order(1);
+                .excludePathPatterns(AUTH_EXCLUDE_PATHS)
+                .order(0);
     }
 
     /**
@@ -86,29 +97,66 @@ public class SaTokenConfig implements WebMvcConfigurer {
      */
     public static class TenantInterceptor implements HandlerInterceptor {
 
+        private static final String SCOPE_ATTRIBUTE = TenantInterceptor.class.getName() + ".scope";
+        private final AuthTenantService authTenantService;
+
+        public TenantInterceptor(AuthTenantService authTenantService) {
+            this.authTenantService = authTenantService;
+        }
+
         @Override
         public boolean preHandle(HttpServletRequest request,
                                  HttpServletResponse response,
                                  Object handler) {
-            try {
-                Object tenantId = StpUtil.getSession().get("tenantId");
-                if (tenantId != null) {
-                    TenantContext.setTenantId(Long.parseLong(tenantId.toString()));
-                }
-                // 从 Session 读取登录时存入的超管标志，避免调用 getRoleList() 触发租户过滤的 SQL
-                Object isAdmin = StpUtil.getSession().get("isAdmin");
-                TenantContext.setAdmin(isAdmin instanceof Boolean && (Boolean) isAdmin);
-            } catch (Exception ignored) {
-                // 未登录时获取 session 会抛异常，忽略即可
+            TenantContext.clear();
+            if (!StpUtil.isLogin()) {
+                return true;
             }
-            return true;
+            try {
+                var context = authTenantService.requireSessionContext(
+                        StpUtil.getLoginId(), StpUtil.getSession());
+                if (context.activeTenantId() == null) {
+                    if (isTenantNeutral(request.getRequestURI())) {
+                        return true;
+                    }
+                    throw new WorkOrderException("请先选择租户");
+                }
+                TenantContext.Scope scope = TenantContext.useTenant(context.activeTenantId());
+                request.setAttribute(SCOPE_ATTRIBUTE, scope);
+                return true;
+            } catch (InvalidAuthSessionException e) {
+                StpUtil.logout();
+                throw e;
+            }
+        }
+
+        private static boolean isTenantNeutral(String uri) {
+            if (uri != null && uri.startsWith("/api/admin/platform/ssl")) {
+                return true;
+            }
+            if ("/api/auth/me".equals(uri)
+                    || "/api/auth/switch-tenant".equals(uri)
+                    || "/api/auth/password".equals(uri)
+                    || "/api/auth/profile".equals(uri)
+                    || "/api/system/version".equals(uri)) {
+                return true;
+            }
+            if ("/api/admin/tenants".equals(uri) || "/api/admin/tenants/options".equals(uri)) {
+                return true;
+            }
+            return uri != null && uri.matches("/api/admin/tenants/\\d+");
         }
 
         @Override
         public void afterCompletion(HttpServletRequest request,
                                     HttpServletResponse response,
                                     Object handler, Exception ex) {
-            TenantContext.clear();
+            Object scope = request.getAttribute(SCOPE_ATTRIBUTE);
+            if (scope instanceof TenantContext.Scope tenantScope) {
+                tenantScope.close();
+            } else {
+                TenantContext.clear();
+            }
         }
     }
 

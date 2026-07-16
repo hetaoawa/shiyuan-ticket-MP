@@ -2,9 +2,11 @@ package top.hetao.shiyuanticketmp.express.listener;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.event.TransactionPhase;
+import org.springframework.transaction.event.TransactionalEventListener;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
 import top.hetao.shiyuanticketmp.express.ExpressService;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.event.WorkOrderStateChangedEvent;
@@ -28,7 +30,7 @@ public class WorkOrderCloseExpressListener {
         this.expressService = expressService;
     }
 
-    @EventListener
+    @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     @Async("webhookExecutor")
     public void onWorkOrderClosed(WorkOrderStateChangedEvent event) {
         if (!ACTION_CLOSE.equals(event.getAction())) {
@@ -44,6 +46,8 @@ public class WorkOrderCloseExpressListener {
         }
 
         log.info("[工单完结] 开始获取物流信息 orderId={} trackingNo={}", order.getId(), trackingNo);
-        expressService.fetchAndSaveOnClose(trackingNo);
+        try (TenantContext.Scope ignored = TenantContext.useTenant(event.getTenantId())) {
+            expressService.fetchAndSaveOnClose(trackingNo);
+        }
     }
 }

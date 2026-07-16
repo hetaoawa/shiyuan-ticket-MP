@@ -7,7 +7,6 @@ import cn.hutool.json.JSONUtil;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
@@ -21,19 +20,34 @@ import java.nio.charset.StandardCharsets;
  *   <li>本系统：sign → Base64 解码 → RSA 私钥解密 → 得到摘要 → 与本端 MD5(body) 比对</li>
  * </ol>
  *
- * <p>私钥为 PEM 格式（PKCS#8），配置在 {@code webhook.cargo-owner.receive.private-key} 中。
- * 环境变量值为 PEM 内容的 Base64 编码（双重编码），解析时自动处理。
+ * <p>私钥为 PEM 格式（PKCS#8），在当前租户的货主接口集成页面中配置。
  */
 @Component
 public class CargoOwnerSignVerifier {
 
     private static final Logger log = LoggerFactory.getLogger(CargoOwnerSignVerifier.class);
 
-    @Value("${webhook.cargo-owner.receive.app-id:}")
-    private String expectedAppId;
+    private final top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver integrationResolver;
+    private final top.hetao.shiyuanticketmp.auth.service.UserService userService;
 
-    @Value("${webhook.cargo-owner.receive.private-key:}")
-    private String privateKeyPem;
+    public CargoOwnerSignVerifier(top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver integrationResolver,
+                                  top.hetao.shiyuanticketmp.auth.service.UserService userService) {
+        this.integrationResolver = integrationResolver;
+        this.userService = userService;
+    }
+
+    /** Resolves the tenant only from the globally unique, server-side user mapping. */
+    public String verify(String appId, String sign, String body) {
+        try {
+            String senderStaffId = objectMapper.readTree(body).path("senderStaffId").asText(null);
+            if (senderStaffId == null || senderStaffId.isBlank()) return "senderStaffId is required";
+            var user = userService.getByExternalUserIdIgnoreTenant(senderStaffId);
+            if (user == null || user.getTenantId() == null) return "External user is not mapped";
+            return verify(user.getTenantId(), appId, sign, body);
+        } catch (Exception e) {
+            return "Invalid request body";
+        }
+    }
 
     ObjectMapper objectMapper = new ObjectMapper();
 
@@ -45,7 +59,12 @@ public class CargoOwnerSignVerifier {
      * @param body  原始请求体 JSON 字符串
      * @return null 表示验证通过，非 null 为错误信息
      */
-    public String verify(String appId, String sign, String body) {
+    public String verify(long tenantId, String appId, String sign, String body) {
+        var integration = integrationResolver.resolve(tenantId,
+                top.hetao.shiyuanticketmp.tenant.integration.IntegrationType.CARGO_OWNER);
+        if (!integration.enabled()) return "Cargo owner integration is disabled";
+        String expectedAppId = integration.text("receiveAppId");
+        String privateKeyPem = integration.secret("receivePrivateKey");
         // 1. 校验 appId
         if (expectedAppId != null && !expectedAppId.isBlank()) {
             if (appId == null || !appId.equals(expectedAppId)) {
@@ -60,7 +79,7 @@ public class CargoOwnerSignVerifier {
 
         // 3. 校验私钥已配置
         if (privateKeyPem == null || privateKeyPem.isBlank()) {
-            log.error("[货主验签] 私钥未配置，请设置 webhook.cargo-owner.private-key");
+            log.error("[货主验签] 私钥未配置，请在当前租户的货主接口集成中配置验签私钥");
             return "服务端验签配置错误";
         }
 

@@ -53,6 +53,15 @@ public interface WorkOrderService {
     WorkOrder assignByRole(Long workOrderId, String assigneeRoleCode);
 
     /**
+     * Atomically auto-assign an eligible external inbound order to the current
+     * tenant's WAREHOUSE_ADMIN role.
+     *
+     * @return true only for the single successful database claimant; false for
+     *         a benign race lost to another scheduler or a manual assignment
+     */
+    boolean autoAssignExternalInbound(Long workOrderId, Long tenantId);
+
+    /**
      * 关闭工单，状态 IN_PROGRESS → CLOSED。
      * 此操作为资金强时效事件，触发严格事务后 WebHook 投递。
      *

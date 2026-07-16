@@ -15,6 +15,8 @@ import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderType;
 import top.hetao.shiyuanticketmp.workorder.service.WorkOrderService;
+import top.hetao.shiyuanticketmp.tenant.service.TenantService;
+import top.hetao.shiyuanticketmp.tenant.setting.service.TenantIntegrationSettingService;
 
 import java.util.Map;
 
@@ -40,17 +42,23 @@ public class CargoOwnerWebhookController {
     private final CargoOwnerSignVerifier signVerifier;
     private final AiParseService aiParseService;
     private final UserService userService;
+    private final TenantService tenantService;
+    private final TenantIntegrationSettingService integrationSettingService;
 
     public CargoOwnerWebhookController(WorkOrderService workOrderService,
                                          ObjectMapper objectMapper,
                                          CargoOwnerSignVerifier signVerifier,
                                          AiParseService aiParseService,
-                                         UserService userService) {
+                                         UserService userService,
+                                         TenantService tenantService,
+                                         TenantIntegrationSettingService integrationSettingService) {
         this.workOrderService = workOrderService;
         this.objectMapper = objectMapper;
         this.signVerifier = signVerifier;
         this.aiParseService = aiParseService;
         this.userService = userService;
+        this.tenantService = tenantService;
+        this.integrationSettingService = integrationSettingService;
     }
 
     /**
@@ -110,6 +118,14 @@ public class CargoOwnerWebhookController {
                         "msg", "未找到外部用户ID对应的系统用户: " + senderStaffId
                 ));
             }
+            tenantService.requireEnabled(submitter.getTenantId());
+            if (!integrationSettingService.externalInboundEnabled(submitter.getTenantId())) {
+                log.info("[货主入站] 租户已关闭外部工单递交 tenantId={}", submitter.getTenantId());
+                return ResponseEntity.status(503).body(Map.of(
+                        "code", 503,
+                        "message", "当前租户已暂停外部工单递交"
+                ));
+            }
 
             // 截断超长输入
             if (content.length() > MAX_CONTENT_LENGTH) {
@@ -121,7 +137,10 @@ public class CargoOwnerWebhookController {
                     content.length() > 50 ? content.substring(0, 50) + "..." : content);
 
             // 5. 调用 AI 解析消息内容
-            String aiResult = aiParseService.parse(content);
+            String aiResult;
+            try (TenantContext.Scope ignored = TenantContext.useTenant(submitter.getTenantId())) {
+                aiResult = aiParseService.parse(content);
+            }
             JsonNode parsed = objectMapper.readTree(aiResult);
 
             String title = parsed.path("title").asText("工单");
@@ -149,12 +168,13 @@ public class CargoOwnerWebhookController {
             order.setConversationId(conversationId);
             order.setSenderStaffId(senderStaffId);
             order.setSubmitterId(submitter.getId());
-            // Webhook 无 Sa-Token session，TenantContext 未设置，租户拦截器默认注入 0
-            // 显式继承映射系统用户的租户 ID，确保工单落到正确租户
+            order.setCreatedViaWebhook(true);
+            // Webhook 无 Sa-Token session，显式继承映射用户的租户并限制作用域。
             order.setTenantId(submitter.getTenantId());
-            TenantContext.setTenantId(submitter.getTenantId());
-
-            WorkOrder created = workOrderService.create(order);
+            WorkOrder created;
+            try (TenantContext.Scope ignored = TenantContext.useTenant(submitter.getTenantId())) {
+                created = workOrderService.create(order);
+            }
 
             log.info("[货主入站] 工单创建成功 orderId={} type={} trackingNo={}",
                     created.getId(), type, trackingNo);

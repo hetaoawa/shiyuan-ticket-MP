@@ -32,8 +32,17 @@ public class WebhookDeadLetterRecord extends BaseEntity {
     /** 事件类型，如 WORK_ORDER.CLOSED */
     private String eventType;
 
+    /** 稳定投递通道代码：DINGTALK / CARGO_OWNER；历史记录可能为空。 */
+    private String channel;
+
     /** 原始目标 URL */
     private String targetUrl;
+
+    /** Cargo-owner conversation/room target captured at the original attempt. */
+    private String conversationId;
+
+    /** Cargo-owner recipient identity captured at the original attempt. */
+    private String senderStaffId;
 
     /**
      * 原始请求体 JSON（TEXT 类型存储）。
@@ -57,7 +66,7 @@ public class WebhookDeadLetterRecord extends BaseEntity {
     private DeadLetterStatus status;
 
     /**
-     * 工厂方法，由 {@link top.hetao.shiyuanticketmp.webhook.WebhookDispatcher} 调用，
+     * 工厂方法，由 WebHook 调度器调用，
      * 在全量重试耗尽后构造死信记录落库。
      */
     public static WebhookDeadLetterRecord of(String eventId, String eventType,

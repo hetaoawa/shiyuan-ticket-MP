@@ -59,7 +59,7 @@ public class DeadLetterController {
 
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
-        result.put("message", "重试投递已触发");
+        result.put("message", "重试投递成功");
         return result;
     }
 

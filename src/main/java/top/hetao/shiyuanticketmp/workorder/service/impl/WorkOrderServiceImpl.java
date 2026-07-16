@@ -1,7 +1,7 @@
 package top.hetao.shiyuanticketmp.workorder.service.impl;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.slf4j.Logger;
@@ -11,7 +11,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.transaction.annotation.Transactional;
 import top.hetao.shiyuanticketmp.auth.entity.SysRole;
+import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
+import top.hetao.shiyuanticketmp.auth.mapper.SysUserMapper;
+import top.hetao.shiyuanticketmp.common.context.TenantContext;
+import top.hetao.shiyuanticketmp.tenant.service.TenantLifecycleGuard;
 import top.hetao.shiyuanticketmp.workorder.cache.WorkOrderCacheManager;
 import top.hetao.shiyuanticketmp.workorder.entity.WorkOrder;
 import top.hetao.shiyuanticketmp.workorder.enums.WorkOrderStatus;
@@ -80,17 +84,23 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     private final WorkOrderCacheManager cacheManager;
     private final WorkOrderTypeResolver typeResolver;
     private final SysRoleMapper roleMapper;
+    private final SysUserMapper userMapper;
+    private final TenantLifecycleGuard tenantLifecycleGuard;
 
     public WorkOrderServiceImpl(WorkOrderMapper mapper,
                                 ApplicationEventPublisher eventPublisher,
                                 WorkOrderCacheManager cacheManager,
                                 WorkOrderTypeResolver typeResolver,
-                                SysRoleMapper roleMapper) {
+                                SysRoleMapper roleMapper,
+                                SysUserMapper userMapper,
+                                TenantLifecycleGuard tenantLifecycleGuard) {
         this.mapper = mapper;
         this.eventPublisher = eventPublisher;
         this.cacheManager = cacheManager;
         this.typeResolver = typeResolver;
         this.roleMapper = roleMapper;
+        this.userMapper = userMapper;
+        this.tenantLifecycleGuard = tenantLifecycleGuard;
     }
 
     @Override
@@ -110,7 +120,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional(readOnly = true)
     public WorkOrder getByIdWithAccessCheck(Long workOrderId, Long currentUserId, List<String> currentUserRoles) {
-        WorkOrder order = getById(workOrderId);
+        // Authorization must use authoritative database state; cached assignment data may lag
+        // the AFTER_COMMIT cache listener and must never grant or deny object access.
+        WorkOrder order = loadAndValidate(workOrderId, null);
         if (!canAccessOrder(order, currentUserId, currentUserRoles)) {
             throw new WorkOrderException("无权查看此工单");
         }
@@ -129,8 +141,18 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder create(WorkOrder workOrder) {
+        Long tenantId = TenantContext.requireTenantId();
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
         if (workOrder.getSubmitterId() == null) {
             throw new WorkOrderException("工单提交人不能为空");
+        }
+        if (workOrder.getTenantId() != null && !tenantId.equals(workOrder.getTenantId())) {
+            throw new WorkOrderException("不能在当前租户上下文中创建其他租户工单");
+        }
+        validateCreateSubmitter(tenantId, workOrder.getSubmitterId());
+        workOrder.setTenantId(tenantId);
+        if (workOrder.getCreatedViaWebhook() == null) {
+            workOrder.setCreatedViaWebhook(false);
         }
         workOrder.setStatus(WorkOrderStatus.PENDING);
         if (workOrder.getType() == null) {
@@ -139,11 +161,35 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         mapper.insert(workOrder);
         log.info("[工单] 创建成功 id={} title={} type={}", workOrder.getId(), workOrder.getTitle(), workOrder.getType());
 
+        Long actorId = currentActorId();
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, workOrder, null, ACTION_CREATE,
-                workOrder.getSubmitterId(), Map.of()));
+                this, workOrder.getTenantId(), workOrder, null, ACTION_CREATE,
+                actorId != null ? actorId : workOrder.getSubmitterId(), Map.of()));
 
         return workOrder;
+    }
+
+    private void validateCreateSubmitter(Long tenantId, Long submitterId) {
+        SysUser tenantSubmitter = userMapper.selectById(submitterId);
+        if (tenantSubmitter != null && tenantId.equals(tenantSubmitter.getTenantId())) {
+            return;
+        }
+
+        Long principalId = currentActorId();
+        if (principalId == null || !principalId.equals(submitterId)) {
+            throw new WorkOrderException("工单提交人不属于当前租户");
+        }
+
+        SysUser principal;
+        List<String> principalRoles;
+        try (TenantContext.Scope ignored = TenantContext.useInternalBypass()) {
+            principal = userMapper.selectByIdIgnoreTenant(principalId);
+            principalRoles = roleMapper.selectRoleCodesByUserId(principalId);
+        }
+        if (principal == null || !Long.valueOf(0L).equals(principal.getTenantId())
+                || !principalRoles.contains("GLOBAL_SYSTEM_ADMIN")) {
+            throw new WorkOrderException("工单提交人不属于当前租户");
+        }
     }
 
     // ----------------------------------------------------------------
@@ -164,31 +210,33 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder assign(Long workOrderId, Long assigneeId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.PENDING);
 
         // 校验：只能派发给云仓侧人员（WAREHOUSE_ADMIN 角色）
+        SysUser assignee = userMapper.selectById(assigneeId);
+        if (assignee == null || !TenantContext.requireTenantId().equals(assignee.getTenantId())) {
+            throw new WorkOrderException("处理人不属于当前租户");
+        }
         List<String> assigneeRoles = roleMapper.selectRoleCodesByUserId(assigneeId);
         if (!assigneeRoles.contains("WAREHOUSE_ADMIN")) {
             throw new WorkOrderException("只能派发给云仓管理人员");
         }
 
         LocalDateTime now = LocalDateTime.now();
+        int affected = mapper.assignPendingToUser(workOrderId, assigneeId, now);
+        requireManualAssignmentClaim(affected, workOrderId);
+
         order.setAssigneeId(assigneeId);
         order.setAssigneeRole(null);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
         order.setAssignedAt(now);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getAssigneeId, assigneeId)
-                .set(WorkOrder::getAssigneeRole, null)
-                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
-                .set(WorkOrder::getAssignedAt, now)
-                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 派发成功 id={} assigneeId={}", workOrderId, assigneeId);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
-                assigneeId, Map.of("assigneeId", assigneeId)));
+                this, order.getTenantId(), order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
+                currentActorId(), Map.of("assigneeId", assigneeId)));
 
         return order;
     }
@@ -206,30 +254,81 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder assignByRole(Long workOrderId, String assigneeRoleCode) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.PENDING);
 
         // 校验角色存在且为云仓侧角色
         validateWarehouseRole(assigneeRoleCode);
 
         LocalDateTime now = LocalDateTime.now();
+        int affected = mapper.assignPendingToRole(workOrderId, assigneeRoleCode, now);
+        requireManualAssignmentClaim(affected, workOrderId);
+
         order.setAssigneeId(null);
         order.setAssigneeRole(assigneeRoleCode);
         order.setStatus(WorkOrderStatus.IN_PROGRESS);
         order.setAssignedAt(now);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getAssigneeId, null)
-                .set(WorkOrder::getAssigneeRole, assigneeRoleCode)
-                .set(WorkOrder::getStatus, WorkOrderStatus.IN_PROGRESS)
-                .set(WorkOrder::getAssignedAt, now)
-                .eq(WorkOrder::getId, workOrderId));
 
         log.info("[工单] 按角色派发成功 id={} assigneeRole={}", workOrderId, assigneeRoleCode);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
-                null, Map.of("assigneeRoleCode", assigneeRoleCode)));
+                this, order.getTenantId(), order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
+                currentActorId(), Map.of("assigneeRoleCode", assigneeRoleCode)));
 
         return order;
+    }
+
+    @Override
+    @Transactional
+    public boolean autoAssignExternalInbound(Long workOrderId, Long tenantId) {
+        Long activeTenantId = TenantContext.requireTenantId();
+        if (workOrderId == null || tenantId == null || tenantId <= 0 || !tenantId.equals(activeTenantId)) {
+            throw new WorkOrderException("自动派发租户上下文不匹配");
+        }
+        tenantLifecycleGuard.lockWritableTenant(tenantId);
+
+        // Validate before the conditional UPDATE so permanent tenant/role setup
+        // errors leave the candidate untouched and observable for operators.
+        validateWarehouseRole("WAREHOUSE_ADMIN");
+
+        LocalDateTime assignedAt = LocalDateTime.now();
+        int affected = mapper.claimExternalInboundForWarehouseRole(workOrderId, tenantId, assignedAt);
+        if (affected == 0) {
+            log.debug("[工单自动派发] 工单已被其他实例或人工处理 tenantId={} orderId={}",
+                    tenantId, workOrderId);
+            return false;
+        }
+        if (affected != 1) {
+            throw new IllegalStateException("自动派发原子更新影响了异常行数: " + affected);
+        }
+
+        WorkOrder order = mapper.selectById(workOrderId);
+        if (order == null || !tenantId.equals(order.getTenantId())) {
+            // Throwing rolls the transaction back, preserving the invariant that
+            // a successful claim always has exactly one corresponding event.
+            throw new WorkOrderException("自动派发后无法读取工单: " + workOrderId);
+        }
+        order.setAssigneeId(null);
+        order.setAssigneeRole("WAREHOUSE_ADMIN");
+        order.setStatus(WorkOrderStatus.IN_PROGRESS);
+        order.setAssignedAt(assignedAt);
+
+        eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
+                this, order.getTenantId(), order, WorkOrderStatus.PENDING, ACTION_ASSIGN,
+                null, Map.of(
+                        "assigneeRoleCode", "WAREHOUSE_ADMIN",
+                        "autoAssignment", true)));
+        log.info("[工单自动派发] 成功 tenantId={} orderId={}", tenantId, workOrderId);
+        return true;
+    }
+
+    private void requireManualAssignmentClaim(int affected, Long workOrderId) {
+        if (affected == 0) {
+            throw new WorkOrderException("工单已被处理，无法重复派发: " + workOrderId);
+        }
+        if (affected != 1) {
+            throw new IllegalStateException("人工派发原子更新影响了异常行数: " + affected);
+        }
     }
 
     private void validateWarehouseRole(String roleCode) {
@@ -241,9 +340,10 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             throw new WorkOrderException("只能派发给云仓侧角色");
         }
         // 校验角色存在（用 selectList 避免 roleCode 跨租户重复时 TooManyResults）
+        Long tenantId = TenantContext.requireTenantId();
         List<SysRole> roles = roleMapper.selectList(
                 new LambdaQueryWrapper<SysRole>().eq(SysRole::getRoleCode, roleCode).last("LIMIT 1"));
-        if (roles.isEmpty()) {
+        if (roles.isEmpty() || !tenantId.equals(roles.get(0).getTenantId())) {
             throw new WorkOrderException("角色不存在: " + roleCode);
         }
     }
@@ -270,18 +370,20 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder close(Long workOrderId, String resolution) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.IN_PROGRESS);
-
+        LocalDateTime closedAt = LocalDateTime.now();
+        requireStateTransitionClaim(
+                mapper.closeInProgress(workOrderId, resolution, closedAt), workOrderId);
         order.setStatus(WorkOrderStatus.CLOSED);
         order.setResolution(resolution);
-        order.setClosedAt(LocalDateTime.now());
-        mapper.updateById(order);
+        order.setClosedAt(closedAt);
 
         log.info("[工单] 关闭成功 id={}", workOrderId);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, WorkOrderStatus.IN_PROGRESS, ACTION_CLOSE,
-                order.getAssigneeId(), Map.of("resolution", resolution)));
+                this, order.getTenantId(), order, WorkOrderStatus.IN_PROGRESS, ACTION_CLOSE,
+                currentActorId(), Map.of("resolution", resolution)));
 
         return order;
     }
@@ -303,29 +405,23 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder reject(Long workOrderId, String reason) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.IN_PROGRESS);
 
         LocalDateTime now = LocalDateTime.now();
+        requireStateTransitionClaim(
+                mapper.rejectInProgress(workOrderId, reason, now), workOrderId);
         order.setStatus(WorkOrderStatus.REJECTED);
         order.setRejectionReason(reason);
         order.setClosedAt(now);
         order.setAssigneeId(null);
         order.setAssigneeRole(null);
         order.setAssignedAt(null);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getStatus, WorkOrderStatus.REJECTED)
-                .set(WorkOrder::getRejectionReason, reason)
-                .set(WorkOrder::getClosedAt, now)
-                .set(WorkOrder::getAssigneeId, null)
-                .set(WorkOrder::getAssigneeRole, null)
-                .set(WorkOrder::getAssignedAt, null)
-                .eq(WorkOrder::getId, workOrderId));
-
         log.info("[工单] 驳回成功 id={} reason={}", workOrderId, reason);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, WorkOrderStatus.IN_PROGRESS, ACTION_REJECT,
-                null, Map.of("reason", reason)));
+                this, order.getTenantId(), order, WorkOrderStatus.IN_PROGRESS, ACTION_REJECT,
+                currentActorId(), Map.of("reason", reason)));
 
         return order;
     }
@@ -347,6 +443,7 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder resubmit(Long workOrderId, WorkOrder updateData) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.REJECTED);
 
         // 更新工单信息
@@ -377,26 +474,16 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         order.setAssigneeRole(null);
         order.setAssignedAt(null);
 
-        // 使用 LambdaUpdateWrapper 显式清除 null 字段，绕过 MyBatis-Plus 跳过 null 的默认行为
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getStatus, WorkOrderStatus.PENDING)
-                .set(WorkOrder::getRejectionReason, null)
-                .set(WorkOrder::getClosedAt, null)
-                .set(WorkOrder::getAssigneeId, null)
-                .set(WorkOrder::getAssigneeRole, null)
-                .set(WorkOrder::getAssignedAt, null)
-                .set(WorkOrder::getTitle, order.getTitle())
-                .set(WorkOrder::getDescription, order.getDescription())
-                .set(WorkOrder::getTrackingNo, order.getTrackingNo())
-                .set(WorkOrder::getTargetAddress, order.getTargetAddress())
-                .set(WorkOrder::getPriority, order.getPriority())
-                .set(WorkOrder::getType, order.getType())
-                .eq(WorkOrder::getId, workOrderId));
+        // 使用带状态条件的原子更新显式清除可空字段，并防止并发重复提交
+        requireStateTransitionClaim(mapper.resubmitRejected(
+                workOrderId, order.getTitle(), order.getDescription(), order.getTrackingNo(),
+                order.getTargetAddress(), order.getPriority(), order.getType(), LocalDateTime.now()),
+                workOrderId);
         log.info("[工单] 重新提交成功 id={} title={}", workOrderId, order.getTitle());
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, WorkOrderStatus.REJECTED, ACTION_RESUBMIT,
-                order.getSubmitterId(), Map.of()));
+                this, order.getTenantId(), order, WorkOrderStatus.REJECTED, ACTION_RESUBMIT,
+                currentActorId(), Map.of()));
 
         return order;
     }
@@ -418,6 +505,7 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public WorkOrder forceReject(Long workOrderId, String reason) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, null);
 
         // 仅 CLOSED 不可强制驳回
@@ -427,28 +515,34 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
         WorkOrderStatus previousStatus = order.getStatus();
         LocalDateTime now = LocalDateTime.now();
+        requireStateTransitionClaim(
+                mapper.forceRejectActive(workOrderId, reason, now), workOrderId);
         order.setStatus(WorkOrderStatus.REJECTED);
         order.setRejectionReason(reason);
         order.setClosedAt(now);
         order.setAssigneeId(null);
         order.setAssigneeRole(null);
         order.setAssignedAt(null);
-        mapper.update(null, new LambdaUpdateWrapper<WorkOrder>()
-                .set(WorkOrder::getStatus, WorkOrderStatus.REJECTED)
-                .set(WorkOrder::getRejectionReason, reason)
-                .set(WorkOrder::getClosedAt, now)
-                .set(WorkOrder::getAssigneeId, null)
-                .set(WorkOrder::getAssigneeRole, null)
-                .set(WorkOrder::getAssignedAt, null)
-                .eq(WorkOrder::getId, workOrderId));
-
         log.info("[工单] 管理员强制驳回 id={} 原状态={} reason={}", workOrderId, previousStatus, reason);
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
-                this, order, previousStatus, ACTION_FORCE_REJECT,
-                null, Map.of("reason", reason, "forceReject", true)));
+                this, order.getTenantId(), order, previousStatus, ACTION_FORCE_REJECT,
+                currentActorId(), Map.of("reason", reason, "forceReject", true)));
 
         return order;
+    }
+
+    private void requireStateTransitionClaim(int affected, Long workOrderId) {
+        if (affected == 0) {
+            throw new WorkOrderException("工单状态已变化或当前操作不再允许: " + workOrderId);
+        }
+        if (affected != 1) {
+            throw new IllegalStateException("工单状态原子更新影响了异常行数: " + affected);
+        }
+    }
+
+    private Long currentActorId() {
+        return StpUtil.isLogin() ? StpUtil.getLoginIdAsLong() : null;
     }
 
     // ----------------------------------------------------------------
@@ -472,6 +566,7 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public int batchAssign(List<Long> workOrderIds, Long assigneeId) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         if (workOrderIds == null || workOrderIds.isEmpty()) {
             throw new WorkOrderException("工单ID列表不能为空");
         }
@@ -504,6 +599,7 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     @Override
     @Transactional
     public int batchAssignByRole(List<Long> workOrderIds, String assigneeRoleCode) {
+        tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         if (workOrderIds == null || workOrderIds.isEmpty()) {
             throw new WorkOrderException("工单ID列表不能为空");
         }
@@ -585,7 +681,8 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         if (order == null || currentUserRoles == null || currentUserRoles.isEmpty()) {
             return false;
         }
-        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+        if (currentUserRoles.contains("SYSTEM_ADMIN")
+                || currentUserRoles.contains("GLOBAL_SYSTEM_ADMIN")) {
             return true;
         }
         boolean canAccess = false;
@@ -617,7 +714,8 @@ public class WorkOrderServiceImpl implements WorkOrderService {
             wrapper.eq(WorkOrder::getSubmitterId, currentUserId);
             return;
         }
-        if (currentUserRoles.contains("SYSTEM_ADMIN")) {
+        if (currentUserRoles.contains("SYSTEM_ADMIN")
+                || currentUserRoles.contains("GLOBAL_SYSTEM_ADMIN")) {
             return; // 不加额外条件
         }
 
@@ -660,8 +758,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
      * @throws WorkOrderException 工单不存在或状态不匹配时
      */
     private WorkOrder loadAndValidate(Long workOrderId, WorkOrderStatus requiredStatus) {
+        Long tenantId = TenantContext.requireTenantId();
         WorkOrder order = mapper.selectById(workOrderId);
-        if (order == null) {
+        if (order == null || !tenantId.equals(order.getTenantId())) {
             throw new WorkOrderException("工单不存在: " + workOrderId);
         }
 

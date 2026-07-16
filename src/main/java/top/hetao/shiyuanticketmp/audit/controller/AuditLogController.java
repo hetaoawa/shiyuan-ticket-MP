@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.audit.controller;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
@@ -27,6 +28,7 @@ public class AuditLogController {
      * 分页查询审计日志。
      */
     @GetMapping
+    @SaCheckPermission("audit:view")
     public Map<String, Object> list(@RequestParam(defaultValue = "WORK_ORDER") String bizType,
                                      @RequestParam(required = false) Long bizId,
                                      @RequestParam(defaultValue = "1") int page,
