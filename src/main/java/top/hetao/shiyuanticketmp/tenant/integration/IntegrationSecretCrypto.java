@@ -38,6 +38,8 @@ public class IntegrationSecretCrypto {
             cipher.updateAAD(("tenant-integration-v1:" + tenantId + ":" + type + ":" + field)
                     .getBytes(StandardCharsets.UTF_8));
             return cipher.doFinal(input);
+        } catch (ConfigurationException e) {
+            throw e;
         } catch (Exception e) {
             throw new IllegalStateException("Unable to protect tenant integration secret", e);
         }
@@ -47,12 +49,22 @@ public class IntegrationSecretCrypto {
         String encoded = environment.getProperty("TENANT_INTEGRATION_ROOT_KEY");
         if (encoded == null || encoded.isBlank()) encoded = environment.getProperty("PLATFORM_SSL_ROOT_KEY");
         if (encoded == null || encoded.isBlank())
-            throw new IllegalStateException("TENANT_INTEGRATION_ROOT_KEY or PLATFORM_SSL_ROOT_KEY must be configured");
+            throw new ConfigurationException("TENANT_INTEGRATION_ROOT_KEY or PLATFORM_SSL_ROOT_KEY must be configured");
         byte[] key;
         try { key = Base64.getDecoder().decode(encoded.trim()); }
-        catch (IllegalArgumentException e) { throw new IllegalStateException("Integration root key is not valid Base64", e); }
-        if (key.length != 32) throw new IllegalStateException("Integration root key must decode to 32 bytes");
+        catch (IllegalArgumentException e) { throw new ConfigurationException("Integration root key is not valid Base64", e); }
+        if (key.length != 32) throw new ConfigurationException("Integration root key must decode to 32 bytes");
         return key;
+    }
+
+    public static class ConfigurationException extends IllegalStateException {
+        public ConfigurationException(String message) {
+            super(message);
+        }
+
+        public ConfigurationException(String message, Throwable cause) {
+            super(message, cause);
+        }
     }
 
     public record EncryptedValue(String ciphertext, String nonce) {}

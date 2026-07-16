@@ -66,7 +66,9 @@ public class TenantIntegrationService {
                     objectMapper.readValue(existing.getPublicConfigJson(),new TypeReference<>(){});
             Map<String,IntegrationSecretCrypto.EncryptedValue> secrets=existing==null||existing.getSecretConfigJson()==null?new LinkedHashMap<>():
                     objectMapper.readValue(existing.getSecretConfigJson(),new TypeReference<>(){});
-            applyPublic(type,request.get("config"),pub); applySecrets(tenantId,type,request.get("secrets"),secrets);
+            applyPublic(type,request.get("config"),pub);
+            pub.keySet().retainAll(PUBLIC_FIELDS.get(type));
+            applySecrets(tenantId,type,request.get("secrets"),secrets);
             validate(type,pub);
             if(existing==null){
                 SysTenantIntegration row=new SysTenantIntegration(); row.setTenantId(tenantId); row.setIntegrationType(type.name());
@@ -82,14 +84,34 @@ public class TenantIntegrationService {
                 if(changed!=1) throw new IntegrationVersionConflictException(); existing.setConfigVersion(expected+1);
             }
             resolver.invalidate(tenantId,type); audit(tenantId,existing.getId(),type,enabledNode.booleanValue(),pub.keySet());
-            return get(tenantId,type);
-        } catch (IntegrationVersionConflictException e){throw e;} catch(Exception e){throw new IllegalArgumentException("Invalid integration configuration",e);}
+            return response(type, enabledNode.booleanValue(), existing.getConfigVersion(), pub, secrets.keySet());
+        } catch (IntegrationVersionConflictException e) {
+            throw e;
+        } catch (IntegrationSecretCrypto.ConfigurationException e) {
+            throw new IllegalArgumentException(e.getMessage(), e);
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Invalid integration configuration", e);
+        }
     }
 
     private void applyPublic(IntegrationType type, JsonNode node, Map<String,Object> target){
         if(node==null)return; if(!node.isObject())throw new IllegalArgumentException("config must be an object");
-        node.fields().forEachRemaining(e->{ if(!PUBLIC_FIELDS.get(type).contains(e.getKey()))throw new IllegalArgumentException("Unknown public field: "+e.getKey());
-            target.put(e.getKey(),objectMapper.convertValue(e.getValue(),Object.class)); });
+        node.fields().forEachRemaining(e->{
+            Object incoming = objectMapper.convertValue(e.getValue(),Object.class);
+            if(!PUBLIC_FIELDS.get(type).contains(e.getKey())){
+                // Older deployments could persist and return fields no longer in the contract.
+                // Accept only an unchanged value echoed from that stored configuration, then
+                // remove it below. A new or modified unknown field remains invalid.
+                if(target.containsKey(e.getKey()) && Objects.equals(target.get(e.getKey()),incoming)){
+                    target.remove(e.getKey());
+                    return;
+                }
+                throw new IllegalArgumentException("Unknown public field: "+e.getKey());
+            }
+            target.put(e.getKey(),incoming);
+        });
     }
     private void applySecrets(long tenantId,IntegrationType type,JsonNode node,Map<String,IntegrationSecretCrypto.EncryptedValue> target){
         if(node==null)return; if(!node.isObject())throw new IllegalArgumentException("secrets must be an object");
@@ -105,9 +127,19 @@ public class TenantIntegrationService {
             if(v<1||v>86400)throw new IllegalArgumentException(name+" is out of range");}}
     }
     private Map<String,Object> response(ResolvedIntegration value){
-        Map<String,Object> map=new LinkedHashMap<>();map.put("type",value.type());map.put("enabled",value.enabled());
-        map.put("configVersion",value.configVersion());map.put("config",value.publicConfig());
-        Map<String,Boolean> configured=new LinkedHashMap<>();SECRET_FIELDS.get(value.type()).forEach(k->configured.put(k,value.secrets().containsKey(k)));
+        return response(value.type(), value.enabled(), value.configVersion(),
+                value.publicConfig(), value.secrets().keySet());
+    }
+    private Map<String,Object> response(IntegrationType type, boolean enabled, long configVersion,
+                                        Map<String,Object> sourcePublicConfig, Set<String> configuredSecrets){
+        Map<String,Object> map=new LinkedHashMap<>();map.put("type",type);map.put("enabled",enabled);
+        map.put("configVersion",configVersion);
+        Map<String,Object> publicConfig=new LinkedHashMap<>();
+        PUBLIC_FIELDS.get(type).forEach(field->{
+            if(sourcePublicConfig.containsKey(field))publicConfig.put(field,sourcePublicConfig.get(field));
+        });
+        map.put("config",publicConfig);
+        Map<String,Boolean> configured=new LinkedHashMap<>();SECRET_FIELDS.get(type).forEach(k->configured.put(k,configuredSecrets.contains(k)));
         map.put("secretConfigured",configured);return map;
     }
     private void audit(long tenantId,Long id,IntegrationType type,boolean enabled,Set<String> publicKeys)throws Exception{

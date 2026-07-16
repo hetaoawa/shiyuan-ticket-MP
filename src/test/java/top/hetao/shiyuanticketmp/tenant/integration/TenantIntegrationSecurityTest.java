@@ -24,6 +24,18 @@ class TenantIntegrationSecurityTest {
     }
 
     @Test
+    void missingRootKeyReportsTheRequiredPersistentConfiguration() {
+        IntegrationSecretCrypto crypto = new IntegrationSecretCrypto(new MockEnvironment());
+
+        IntegrationSecretCrypto.ConfigurationException error = assertThrows(
+                IntegrationSecretCrypto.ConfigurationException.class,
+                () -> crypto.encrypt(100, IntegrationType.AI, "apiKey", "secret-value"));
+
+        assertEquals("TENANT_INTEGRATION_ROOT_KEY or PLATFORM_SSL_ROOT_KEY must be configured",
+                error.getMessage());
+    }
+
+    @Test
     void missingIntegrationIsDisabledAndContainsNoSecrets() {
         TenantIntegrationMapper mapper=mock(TenantIntegrationMapper.class);
         IntegrationSecretCrypto crypto=mock(IntegrationSecretCrypto.class);

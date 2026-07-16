@@ -37,7 +37,7 @@ public class AiParseController {
         }
         String normalized = text.length() > MAX_SINGLE_INPUT_LENGTH
                 ? text.substring(0, MAX_SINGLE_INPUT_LENGTH) : text;
-        return executePolicy("single", "v1", normalized,
+        return executePolicy("single", "v2", normalized,
                 () -> aiParseService.parse(normalized));
     }
 

@@ -19,8 +19,8 @@ class AiBatchParseServiceTest {
         String text = "YT100 change address\nSF200 intercept";
         when(model.parseBatch(text, "INTERCEPT")).thenReturn("""
                 {"items":[
-                  {"sourceLine":"YT100 change address","title":"change - YT100","description":"d1","trackingNo":"YT100","targetAddress":"new","type":"CHANGE_ADDRESS","priority":1},
-                  {"sourceLine":"SF200 intercept","title":"intercept - SF200","description":"d2","trackingNo":"SF200","targetAddress":"","type":"INTERCEPT","priority":1}
+                  {"sourceLine":"YT100 change address","title":"change - YT100","description":"YT100 change address","trackingNo":"YT100","targetAddress":"new","type":"CHANGE_ADDRESS","priority":1},
+                  {"sourceLine":"SF200 intercept","title":"intercept - SF200","description":"SF200 intercept","trackingNo":"SF200","targetAddress":"","type":"INTERCEPT","priority":1}
                 ]}
                 """);
 
@@ -51,5 +51,19 @@ class AiBatchParseServiceTest {
         assertThatThrownBy(() -> service.parseAndValidate(text, null))
                 .isInstanceOf(AiParseService.AiParseException.class)
                 .hasMessageContaining("字段必须严格");
+    }
+
+    @Test
+    void rejectsDescriptionThatChangesOriginalCriticalInformation() {
+        String text = "YT100 改址到广东省深圳市南山区1号";
+        when(model.parseBatch(text, null)).thenReturn("""
+                {"items":[{"sourceLine":"YT100 改址到广东省深圳市南山区1号","title":"改址工单 - YT100",
+                "description":"YT100 改址到广东省深圳市南山区2号","trackingNo":"YT100",
+                "targetAddress":"广东省深圳市南山区1号","type":"CHANGE_ADDRESS","priority":1}]}
+                """);
+
+        assertThatThrownBy(() -> service.parseAndValidate(text, null))
+                .isInstanceOf(AiParseService.AiParseException.class)
+                .hasMessageContaining("description 未逐字保留原文");
     }
 }

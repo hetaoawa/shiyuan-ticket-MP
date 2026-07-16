@@ -16,7 +16,7 @@ import java.util.Set;
 public class AiBatchParseService {
     public static final int MAX_ITEMS = 20;
     public static final int MAX_TEXT_LENGTH = 2000;
-    public static final String SCHEMA_VERSION = "v1";
+    public static final String SCHEMA_VERSION = "v2";
     private static final Set<String> ROOT_FIELDS = Set.of("items");
     private static final Set<String> ITEM_FIELDS = Set.of(
             "sourceLine", "title", "description", "trackingNo",
@@ -81,7 +81,10 @@ public class AiBatchParseService {
                     throw schemaError("sourceLine 重复");
                 }
                 requiredText(item, "title", i, 200);
-                optionalText(item, "description", i, Integer.MAX_VALUE);
+                String description = optionalText(item, "description", i, Integer.MAX_VALUE);
+                if (!description.equals(sourceLine)) {
+                    throw schemaError("items[" + i + "].description 未逐字保留原文");
+                }
                 String trackingNo = optionalText(item, "trackingNo", i, 50);
                 optionalText(item, "targetAddress", i, 500);
                 String type = requiredText(item, "type", i, 30);

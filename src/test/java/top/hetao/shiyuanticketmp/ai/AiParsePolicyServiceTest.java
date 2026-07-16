@@ -96,6 +96,29 @@ class AiParsePolicyServiceTest {
 
     @SuppressWarnings("unchecked")
     @Test
+    void addressBusinessValidationDoesNotCountAsMaliciousRejection() {
+        StringRedisTemplate redis = mock(StringRedisTemplate.class);
+        ValueOperations<String, String> values = mock(ValueOperations.class);
+        ZSetOperations<String, String> zsets = mock(ZSetOperations.class);
+        when(redis.opsForValue()).thenReturn(values);
+        when(redis.opsForZSet()).thenReturn(zsets);
+        when(redis.getExpire(anyString(), eq(TimeUnit.SECONDS))).thenReturn(-2L);
+        when(values.get(anyString())).thenReturn(null);
+        when(values.increment(anyString())).thenReturn(1L);
+
+        assertThatThrownBy(() -> new AiParsePolicyService(redis, new ObjectMapper()).execute(
+                12L, "34", "single", "v2", "input",
+                () -> { throw AiParseService.AiParseException.businessValidation(
+                        "地址缺少区县信息，请用户核实"); }))
+                .isInstanceOf(AiParseService.AiParseException.class)
+                .hasMessage("地址缺少区县信息，请用户核实");
+
+        verify(zsets, never()).add(anyString(), anyString(),
+                org.mockito.ArgumentMatchers.anyDouble());
+    }
+
+    @SuppressWarnings("unchecked")
+    @Test
     void singleAndBatchModesSharePrincipalRateQuotaButKeepSeparateCacheKeys() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
         ValueOperations<String, String> values = mock(ValueOperations.class);
