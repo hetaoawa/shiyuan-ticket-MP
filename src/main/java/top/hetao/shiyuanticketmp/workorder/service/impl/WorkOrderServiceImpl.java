@@ -289,7 +289,12 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
         // Validate before the conditional UPDATE so permanent tenant/role setup
         // errors leave the candidate untouched and observable for operators.
-        validateWarehouseRole("WAREHOUSE_ADMIN");
+        validateWarehouseRoleExists("WAREHOUSE_ADMIN");
+        if (!hasActiveUserForRole(tenantId, "WAREHOUSE_ADMIN")) {
+            log.warn("[工单自动派发] 当前租户云仓管理员角色下无可受理用户，跳过派发 tenantId={} orderId={}",
+                    tenantId, workOrderId);
+            return false;
+        }
 
         LocalDateTime assignedAt = LocalDateTime.now();
         int affected = mapper.claimExternalInboundForWarehouseRole(workOrderId, tenantId, assignedAt);
@@ -332,6 +337,15 @@ public class WorkOrderServiceImpl implements WorkOrderService {
     }
 
     private void validateWarehouseRole(String roleCode) {
+        validateWarehouseRoleExists(roleCode);
+        Long tenantId = TenantContext.requireTenantId();
+        if (!hasActiveUserForRole(tenantId, roleCode)) {
+            throw new WorkOrderException(
+                    "当前租户的云仓管理员角色下无可受理用户，请先创建并启用用户、分配云仓管理员角色后再派发工单");
+        }
+    }
+
+    private void validateWarehouseRoleExists(String roleCode) {
         if (roleCode == null || roleCode.isBlank()) {
             throw new WorkOrderException("角色编码不能为空");
         }
@@ -342,10 +356,17 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         // 校验角色存在（用 selectList 避免 roleCode 跨租户重复时 TooManyResults）
         Long tenantId = TenantContext.requireTenantId();
         List<SysRole> roles = roleMapper.selectList(
-                new LambdaQueryWrapper<SysRole>().eq(SysRole::getRoleCode, roleCode).last("LIMIT 1"));
+                new LambdaQueryWrapper<SysRole>()
+                        .eq(SysRole::getTenantId, tenantId)
+                        .eq(SysRole::getRoleCode, roleCode)
+                        .last("LIMIT 1"));
         if (roles.isEmpty() || !tenantId.equals(roles.get(0).getTenantId())) {
             throw new WorkOrderException("角色不存在: " + roleCode);
         }
+    }
+
+    private boolean hasActiveUserForRole(Long tenantId, String roleCode) {
+        return userMapper.existsActiveUserByTenantAndRoleCode(tenantId, roleCode);
     }
 
     // ----------------------------------------------------------------
@@ -606,6 +627,9 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         if (assigneeRoleCode == null || assigneeRoleCode.isBlank()) {
             throw new WorkOrderException("角色编码不能为空");
         }
+        // Validate outside the per-order loop. Otherwise the loop's partial-failure
+        // handling would swallow this tenant-level setup error and only return 0.
+        validateWarehouseRole(assigneeRoleCode);
 
         int successCount = 0;
         List<String> errors = new ArrayList<>();
