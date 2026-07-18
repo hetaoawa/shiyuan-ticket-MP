@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.auth.mapper;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -46,6 +47,7 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
      * @return 用户实体，不存在时返回 null
      */
     @Select("SELECT * FROM sys_user WHERE id = #{id} AND deleted = 0")
+    @InterceptorIgnore(tenantLine = "true", dataPermission = "false")
     SysUser selectByIdIgnoreTenant(@Param("id") Long id);
 
     @Update("""
@@ -95,4 +97,27 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
             ORDER BY u.username
             """)
     java.util.List<SysUser> selectActiveUsersByRoleCode(@Param("roleCode") String roleCode);
+
+    /**
+     * Checks whether the given tenant has at least one enabled user bound to the role.
+     *
+     * <p>{@code sys_user_role} is a global relation table, so both sides of the
+     * relation are constrained to the same tenant explicitly.</p>
+     */
+    @Select("""
+            SELECT EXISTS(
+                SELECT 1
+                FROM sys_user u
+                JOIN sys_user_role ur ON ur.user_id = u.id
+                JOIN sys_role r ON r.id = ur.role_id
+                WHERE u.tenant_id = #{tenantId}
+                  AND r.tenant_id = #{tenantId}
+                  AND r.role_code = #{roleCode}
+                  AND u.status = 1
+                  AND u.deleted = 0
+                  AND r.deleted = 0
+            )
+            """)
+    boolean existsActiveUserByTenantAndRoleCode(@Param("tenantId") Long tenantId,
+                                                 @Param("roleCode") String roleCode);
 }

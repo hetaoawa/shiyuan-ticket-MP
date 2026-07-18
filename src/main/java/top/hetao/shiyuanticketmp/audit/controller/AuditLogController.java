@@ -31,18 +31,22 @@ public class AuditLogController {
     @SaCheckPermission("audit:view")
     public Map<String, Object> list(@RequestParam(defaultValue = "WORK_ORDER") String bizType,
                                      @RequestParam(required = false) Long bizId,
+                                     @RequestParam(required = false) String action,
+                                     @RequestParam(required = false) Long operatorId,
                                      @RequestParam(defaultValue = "1") int page,
                                      @RequestParam(defaultValue = "10") int pageSize,
                                      @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdStartTime,
                                      @RequestParam(required = false) @DateTimeFormat(pattern = "yyyy-MM-dd HH:mm:ss") LocalDateTime createdEndTime) {
-        IPage<SysAuditLog> result = auditLogService.listPage(bizType, bizId, page, pageSize, createdStartTime, createdEndTime);
+        IPage<SysAuditLog> result = auditLogService.listPage(
+                bizType, bizId, action, operatorId, page, pageSize, createdStartTime, createdEndTime);
 
         Map<String, Object> response = new HashMap<>();
         response.put("code", 200);
+        response.put("message", "success");
         response.put("data", result.getRecords());
         response.put("total", result.getTotal());
-        response.put("page", page);
-        response.put("pageSize", pageSize);
+        response.put("page", result.getCurrent());
+        response.put("pageSize", result.getSize());
         return response;
     }
 }

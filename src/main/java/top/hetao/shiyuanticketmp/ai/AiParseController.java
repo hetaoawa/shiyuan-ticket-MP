@@ -37,7 +37,13 @@ public class AiParseController {
         }
         String normalized = text.length() > MAX_SINGLE_INPUT_LENGTH
                 ? text.substring(0, MAX_SINGLE_INPUT_LENGTH) : text;
-        return executePolicy("single", "v2", normalized,
+        try {
+            // Reject an obvious multi-tracking-number input before consuming cache/rate quota.
+            AiParseService.validateSingleTrackingNumberInput(normalized);
+        } catch (AiParseService.AiParseException e) {
+            return badRequest(e.getMessage());
+        }
+        return executePolicy("single", AiParseService.SCHEMA_VERSION, normalized,
                 () -> aiParseService.parse(normalized));
     }
 

@@ -9,6 +9,8 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
+import top.hetao.shiyuanticketmp.audit.entity.SysAuditLog;
+import top.hetao.shiyuanticketmp.audit.service.AuditLogService;
 import top.hetao.shiyuanticketmp.auth.entity.SysRole;
 import top.hetao.shiyuanticketmp.auth.entity.SysUser;
 import top.hetao.shiyuanticketmp.auth.mapper.SysRoleMapper;
@@ -56,19 +58,22 @@ public class WorkOrderController {
     private final SysRoleMapper roleMapper;
     private final TenantService tenantService;
     private final WorkOrderBatchCreateService batchCreateService;
+    private final AuditLogService auditLogService;
 
     public WorkOrderController(WorkOrderService workOrderService,
                                WorkOrderCommentService commentService,
                                UserService userService,
                                SysRoleMapper roleMapper,
                                TenantService tenantService,
-                               WorkOrderBatchCreateService batchCreateService) {
+                               WorkOrderBatchCreateService batchCreateService,
+                               AuditLogService auditLogService) {
         this.workOrderService = workOrderService;
         this.commentService = commentService;
         this.userService = userService;
         this.roleMapper = roleMapper;
         this.tenantService = tenantService;
         this.batchCreateService = batchCreateService;
+        this.auditLogService = auditLogService;
     }
 
     /**
@@ -188,6 +193,28 @@ public class WorkOrderController {
         Map<String, Object> result = new HashMap<>();
         result.put("code", 200);
         result.put("data", order);
+        return result;
+    }
+
+    /**
+     * 查询当前用户可见工单的处理轨迹。该接口只要求工单查看权限，
+     * 不扩大系统审计页的 audit:view 权限。
+     */
+    @GetMapping("/{id}/audit-logs")
+    @SaCheckPermission("workorder:view")
+    public Map<String, Object> auditLogs(@PathVariable Long id) {
+        Long currentUserId = StpUtil.getLoginIdAsLong();
+        List<String> currentUserRoles = userService.getRoleCodes(currentUserId);
+        workOrderService.getByIdWithAccessCheck(id, currentUserId, currentUserRoles);
+        AuditLogService.TimelineResult timeline = auditLogService.getWorkOrderTimeline(id);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("code", 200);
+        result.put("message", "success");
+        result.put("data", timeline.records());
+        result.put("total", timeline.total());
+        result.put("truncated", timeline.truncated());
+        result.put("order", "ASC");
         return result;
     }
 
