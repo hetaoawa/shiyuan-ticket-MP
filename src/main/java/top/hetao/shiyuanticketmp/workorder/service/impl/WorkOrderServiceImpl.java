@@ -29,6 +29,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * 工单业务核心实现
@@ -467,23 +468,31 @@ public class WorkOrderServiceImpl implements WorkOrderService {
         tenantLifecycleGuard.lockWritableTenant(TenantContext.requireTenantId());
         WorkOrder order = loadAndValidate(workOrderId, WorkOrderStatus.REJECTED);
 
+        List<String> changedFields = new ArrayList<>();
         // 更新工单信息
         if (updateData.getTitle() != null && !updateData.getTitle().isBlank()) {
+            addChangedField(changedFields, "title", order.getTitle(), updateData.getTitle());
             order.setTitle(updateData.getTitle());
         }
         if (updateData.getDescription() != null) {
+            addChangedField(changedFields, "description", order.getDescription(), updateData.getDescription());
             order.setDescription(updateData.getDescription());
         }
         if (updateData.getTrackingNo() != null) {
+            addChangedField(changedFields, "trackingNo", order.getTrackingNo(), updateData.getTrackingNo());
             order.setTrackingNo(updateData.getTrackingNo());
         }
         if (updateData.getTargetAddress() != null) {
+            addChangedField(changedFields, "targetAddress",
+                    order.getTargetAddress(), updateData.getTargetAddress());
             order.setTargetAddress(updateData.getTargetAddress());
         }
         if (updateData.getPriority() != null) {
+            addChangedField(changedFields, "priority", order.getPriority(), updateData.getPriority());
             order.setPriority(updateData.getPriority());
         }
         if (updateData.getType() != null) {
+            addChangedField(changedFields, "type", order.getType(), updateData.getType());
             order.setType(updateData.getType());
         }
 
@@ -504,9 +513,16 @@ public class WorkOrderServiceImpl implements WorkOrderService {
 
         eventPublisher.publishEvent(new WorkOrderStateChangedEvent(
                 this, order.getTenantId(), order, WorkOrderStatus.REJECTED, ACTION_RESUBMIT,
-                currentActorId(), Map.of()));
+                currentActorId(), Map.of("changedFields", List.copyOf(changedFields))));
 
         return order;
+    }
+
+    private void addChangedField(List<String> changedFields, String field,
+                                 Object previousValue, Object currentValue) {
+        if (!Objects.equals(previousValue, currentValue)) {
+            changedFields.add(field);
+        }
     }
 
     // ----------------------------------------------------------------

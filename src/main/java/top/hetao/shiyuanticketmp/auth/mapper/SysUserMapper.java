@@ -1,5 +1,6 @@
 package top.hetao.shiyuanticketmp.auth.mapper;
 
+import com.baomidou.mybatisplus.annotation.InterceptorIgnore;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -46,6 +47,7 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
      * @return 用户实体，不存在时返回 null
      */
     @Select("SELECT * FROM sys_user WHERE id = #{id} AND deleted = 0")
+    @InterceptorIgnore(tenantLine = "true", dataPermission = "false")
     SysUser selectByIdIgnoreTenant(@Param("id") Long id);
 
     @Update("""
