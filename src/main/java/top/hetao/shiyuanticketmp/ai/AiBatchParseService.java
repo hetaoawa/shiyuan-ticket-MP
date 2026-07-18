@@ -16,7 +16,7 @@ import java.util.Set;
 public class AiBatchParseService {
     public static final int MAX_ITEMS = 20;
     public static final int MAX_TEXT_LENGTH = 2000;
-    public static final String SCHEMA_VERSION = "v2";
+    public static final String SCHEMA_VERSION = "v4";
     private static final Set<String> ROOT_FIELDS = Set.of("items");
     private static final Set<String> ITEM_FIELDS = Set.of(
             "sourceLine", "title", "description", "trackingNo",
@@ -100,6 +100,12 @@ public class AiBatchParseService {
                 }
 
                 ObjectNode out = item.deepCopy();
+                String effectiveType = expectedType != null && !expectedType.isBlank()
+                        ? expectedType : type;
+                out.put("title", formatTitle(effectiveType, trackingNo));
+                out.put("targetAddress", AiParseService.normalizeChangeAddressTarget(
+                        effectiveType, item.get("targetAddress"), sourceLine,
+                        "items[" + i + "].targetAddress"));
                 ArrayNode warnings = out.putArray("warnings");
                 if (expectedType != null && !expectedType.isBlank() && !expectedType.equals(type)) {
                     warnings.add("TYPE_CONFLICT:" + type);
@@ -122,6 +128,18 @@ public class AiBatchParseService {
         } catch (Exception e) {
             throw schemaError("AI 返回不是合法 JSON");
         }
+    }
+
+    static String formatTitle(String type, String trackingNo) {
+        String prefix = switch (WorkOrderType.valueOf(type)) {
+            case CHANGE_ADDRESS -> "更址工单";
+            case INTERCEPT -> "拦截工单";
+            case DAMAGE -> "破损工单";
+            case LOST -> "丢失工单";
+            case OTHER -> "其他工单";
+        };
+        return trackingNo == null || trackingNo.isBlank()
+                ? prefix : prefix + " - " + trackingNo.trim();
     }
 
     private void requireObjectWithExactFields(JsonNode node, Set<String> expected, String path) {
