@@ -365,10 +365,14 @@ public class ExpressService {
             if (appcode == null || appcode.isBlank()) throw new WorkOrderException("Express integration is incomplete");
             String formBody = buildFormBody(trackingNo, mobileLast4, cpCode);
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiUrl))
+                    .uri(URI.create(apiUrl + "?" + formBody))
                     .header("Authorization", "APPCODE " + appcode)
                     .header("Content-Type", "application/x-www-form-urlencoded")
-                    .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
+                    // 更换了供应商，新供应商只支持 GET 查询，这里废弃
+//                    .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
+
+                    .GET()
+
                     .timeout(Duration.ofSeconds(integration.integer("timeoutSeconds", 15)))
                     .build();
 
@@ -390,12 +394,22 @@ public class ExpressService {
     }
 
     private String buildFormBody(String trackingNo, String mobileLast4, String cpCode) {
+        // 由于新供应商查询参数修改，此处作废，下方为新供应商方法
+//        StringBuilder sb = new StringBuilder();
+//        sb.append("expressNo=").append(trackingNo);
+//        sb.append("&cpCode=").append(cpCode);
+//        if (mobileLast4 != null && !mobileLast4.isBlank()) {
+//            sb.append("&mobile=").append(mobileLast4);
+//        }
+
         StringBuilder sb = new StringBuilder();
-        sb.append("expressNo=").append(trackingNo);
-        sb.append("&cpCode=").append(cpCode);
         if (mobileLast4 != null && !mobileLast4.isBlank()) {
-            sb.append("&mobile=").append(mobileLast4);
+            sb.append("no=").append(trackingNo).append(":").append(mobileLast4);
+            sb.append("&type=").append(cpCode);
         }
+        sb.append("&no=").append(trackingNo);
+        sb.append("&type=").append(cpCode);
+
         return sb.toString();
     }
 
