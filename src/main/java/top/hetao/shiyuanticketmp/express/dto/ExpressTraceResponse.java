@@ -6,7 +6,7 @@ import lombok.Data;
 import java.util.List;
 
 /**
- * 物流轨迹查询响应体（映射外部接口 data 字段）。
+ * 物流轨迹查询响应体（内部接口和缓存契约，由供应商响应转换）。
  */
 @Data
 public class ExpressTraceResponse {

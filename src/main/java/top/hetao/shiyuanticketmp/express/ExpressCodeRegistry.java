@@ -14,6 +14,38 @@ import java.util.regex.Pattern;
 @Component
 public class ExpressCodeRegistry {
 
+    /** 内部编码保持兼容，仅在供应商边界转换为文档中的 type。 */
+    private static final Map<String, String> PROVIDER_CODES = Map.ofEntries(
+            Map.entry("ZTO", "ZTO"), Map.entry("YTO", "YTO"), Map.entry("STO", "STO"),
+            Map.entry("JD", "JD"), Map.entry("EMS", "EMS"), Map.entry("HTKY", "HTKY"),
+            Map.entry("ZTKY", "ZTKY"), Map.entry("SF", "SFEXPRESS"), Map.entry("YD", "YUNDA"),
+            Map.entry("YZPY", "CHINAPOST"), Map.entry("DBL", "DEPPON"),
+            Map.entry("DBKD", "DEPPON"), Map.entry("DBKY", "DEPPON"),
+            Map.entry("KYE", "KYEXPRESS"), Map.entry("KYSY", "KYEXPRESS"),
+            Map.entry("ZTOKY", "ZTO56"), Map.entry("YDKY", "YUNDA56")
+    );
+
+    public String toProviderCode(String cpCode) {
+        return cpCode == null ? null : PROVIDER_CODES.get(cpCode.trim().toUpperCase(Locale.ROOT));
+    }
+
+    public String fromProviderCode(String providerCode, String requestedCode) {
+        String type = providerCode == null ? "" : providerCode.toUpperCase(Locale.ROOT);
+        if (requestedCode != null && (type.isBlank() || type.equals(toProviderCode(requestedCode)))) {
+            return requestedCode;
+        }
+        return switch (type) {
+            case "SFEXPRESS" -> "SF";
+            case "YUNDA" -> "YD";
+            case "CHINAPOST" -> "YZPY";
+            case "DEPPON" -> "DBL";
+            case "KYEXPRESS" -> "KYE";
+            case "ZTO56" -> "ZTOKY";
+            case "YUNDA56" -> "YDKY";
+            default -> type.isBlank() ? requestedCode : type;
+        };
+    }
+
     /**
      * 快递公司编码映射：编码 -> 中文名称
      */
@@ -137,7 +169,7 @@ public class ExpressCodeRegistry {
     /**
      * 需要手机号后四位的快递公司编码集合
      */
-    private static final Set<String> MOBILE_REQUIRED_CODES = Set.of("SF", "ZTO", "SHUNFENGKUAIYUN");
+    private static final Set<String> MOBILE_REQUIRED_CODES = Set.of("SF", "SHUNFENGKUAIYUN");
 
     /**
      * 根据单号识别快递公司编码。
@@ -176,7 +208,7 @@ public class ExpressCodeRegistry {
      * @return true=需要，false=不需要
      */
     public boolean isMobileRequired(String cpCode) {
-        return MOBILE_REQUIRED_CODES.contains(cpCode);
+        return cpCode != null && MOBILE_REQUIRED_CODES.contains(cpCode);
     }
 
     /**
