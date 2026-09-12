@@ -2,7 +2,6 @@ package top.hetao.shiyuanticketmp.express;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -18,18 +17,25 @@ import top.hetao.shiyuanticketmp.tenant.integration.IntegrationType;
 import top.hetao.shiyuanticketmp.tenant.integration.TenantIntegrationResolver;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
  * 物流轨迹查询服务。
  *
- * <p>调用阿里云市场快递查询接口（POST）获取物流轨迹。
+ * <p>调用阿里云市场快递查询接口（GET）获取物流轨迹。
  * 支持 DB 落库缓存（12 小时有效期，已签收永不过期）。
  */
 @Service
@@ -37,7 +43,7 @@ public class ExpressService {
 
     private static final Logger log = LoggerFactory.getLogger(ExpressService.class);
 
-    private static final String DEFAULT_API_URL = "https://kzexpress.market.alicloudapi.com/api-mall/api/express/query";
+    private static final String DEFAULT_API_URL = "https://wuliu.market.alicloudapi.com/kdi";
 
     /** 需要手机号后四位的快递公司默认值 */
     private static final String DEFAULT_MOBILE_LAST4 = "7426";
@@ -99,17 +105,14 @@ public class ExpressService {
      */
     public ExpressTraceResponse queryTrace(String trackingNo, String mobileLast4, String cpCode) {
         // 1. 识别快递公司
-        String resolvedCpCode = cpCode;
+        String resolvedCpCode = cpCode == null ? null : cpCode.trim().toUpperCase(Locale.ROOT);
         if (resolvedCpCode == null || resolvedCpCode.isBlank()) {
             resolvedCpCode = codeRegistry.identify(trackingNo);
-            if (resolvedCpCode == null) {
-                throw new WorkOrderException("无法识别快递公司，请手动指定快递公司编码（cpCode）");
-            }
         }
 
         // 2. 处理手机号后四位（需要时静默使用默认值）
         String effectiveMobile = mobileLast4;
-        if (codeRegistry.isMobileRequired(resolvedCpCode)) {
+        if (resolvedCpCode != null && codeRegistry.isMobileRequired(resolvedCpCode)) {
             if (effectiveMobile == null || effectiveMobile.isBlank()) {
                 effectiveMobile = DEFAULT_MOBILE_LAST4;
                 log.info("[物流查询] 使用默认手机号后四位 trackingNo={}", trackingNo);
@@ -119,7 +122,7 @@ public class ExpressService {
             }
         }
 
-        // 3. 调用外部接口（POST）
+        // 3. 调用外部接口（GET）；本地无法识别时由供应商自动识别。
         return doQueryExternal(trackingNo, effectiveMobile, resolvedCpCode);
     }
 
@@ -363,18 +366,8 @@ public class ExpressService {
             String apiUrl = integration.text("apiUrl");
             if (apiUrl == null || apiUrl.isBlank()) apiUrl = DEFAULT_API_URL;
             if (appcode == null || appcode.isBlank()) throw new WorkOrderException("Express integration is incomplete");
-            String formBody = buildFormBody(trackingNo, mobileLast4, cpCode);
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(apiUrl + "?" + formBody))
-                    .header("Authorization", "APPCODE " + appcode)
-                    .header("Content-Type", "application/x-www-form-urlencoded")
-                    // 更换了供应商，新供应商只支持 GET 查询，这里废弃
-//                    .POST(HttpRequest.BodyPublishers.ofString(formBody, StandardCharsets.UTF_8))
-
-                    .GET()
-
-                    .timeout(Duration.ofSeconds(integration.integer("timeoutSeconds", 15)))
-                    .build();
+            HttpRequest request = buildRequest(apiUrl, appcode, trackingNo, mobileLast4, cpCode,
+                    integration.integer("timeoutSeconds", 15));
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
 
@@ -393,45 +386,86 @@ public class ExpressService {
         }
     }
 
-    private String buildFormBody(String trackingNo, String mobileLast4, String cpCode) {
-        // 由于新供应商查询参数修改，此处作废，下方为新供应商方法
-//        StringBuilder sb = new StringBuilder();
-//        sb.append("expressNo=").append(trackingNo);
-//        sb.append("&cpCode=").append(cpCode);
-//        if (mobileLast4 != null && !mobileLast4.isBlank()) {
-//            sb.append("&mobile=").append(mobileLast4);
-//        }
-
-        StringBuilder sb = new StringBuilder();
+    HttpRequest buildRequest(String apiUrl, String appcode, String trackingNo, String mobileLast4,
+                             String cpCode, int timeoutSeconds) {
+        String no = trackingNo;
         if (mobileLast4 != null && !mobileLast4.isBlank()) {
-            sb.append("no=").append(trackingNo).append(":").append(mobileLast4);
-            sb.append("&type=").append(cpCode);
+            no += ":" + mobileLast4;
         }
-        sb.append("&no=").append(trackingNo);
-        sb.append("&type=").append(cpCode);
-
-        return sb.toString();
+        String query = "no=" + URLEncoder.encode(no, StandardCharsets.UTF_8);
+        String providerCode = codeRegistry.toProviderCode(cpCode);
+        if (providerCode != null) {
+            query += "&type=" + URLEncoder.encode(providerCode, StandardCharsets.UTF_8);
+        }
+        String separator = apiUrl.contains("?") ? (apiUrl.endsWith("?") || apiUrl.endsWith("&") ? "" : "&") : "?";
+        return HttpRequest.newBuilder(URI.create(apiUrl + separator + query))
+                .header("Authorization", "APPCODE " + appcode)
+                .GET().timeout(Duration.ofSeconds(timeoutSeconds)).build();
     }
 
-    private ExpressTraceResponse parseResponse(String body, String trackingNo, String cpCode) {
+    ExpressTraceResponse parseResponse(String body, String trackingNo, String cpCode) {
         try {
             JsonNode root = objectMapper.readTree(body);
 
-            boolean success = root.path("success").asBoolean(false);
-            int code = root.path("code").asInt(0);
-
-            if (!success || code != 200) {
+            String code = root.path("status").asText();
+            if (!"0".equals(code)) {
                 String msg = root.path("msg").asText("未知错误");
                 log.warn("[物流查询] 接口返回失败 code={} msg={}", code, msg);
                 throw new WorkOrderException("物流查询失败：" + msg);
             }
 
-            JsonNode data = root.path("data");
-            if (data.isMissingNode() || data.isNull()) {
+            JsonNode data = root.path("result");
+            if (!data.isObject()) {
                 throw new WorkOrderException("物流查询返回数据为空");
             }
 
-            return objectMapper.convertValue(data, new TypeReference<>() {});
+            ExpressTraceResponse result = new ExpressTraceResponse();
+            result.setCpCode(codeRegistry.fromProviderCode(data.path("type").asText(), cpCode));
+            result.setMailNo(trackingNo);
+            result.setLogisticsCompanyName(data.path("expName").asText(null));
+            result.setCpMobile(data.path("courierPhone").asText(null));
+            result.setCpUrl(data.path("expSite").asText(null));
+            String[] status = switch (data.path("deliverystatus").asText()) {
+                case "0" -> new String[]{"ACCEPT", "已揽件"};
+                case "1" -> new String[]{"TRANSPORT", "运输中"};
+                case "2" -> new String[]{"DELIVERING", "派送中"};
+                case "3" -> new String[]{"DELIVERED", "已签收"};
+                case "4" -> new String[]{"FAIL", "派送失败"};
+                case "5" -> new String[]{"EXCEPTION", "疑难件"};
+                case "6" -> new String[]{"RETURN", "退件签收"};
+                default -> new String[]{"UNKNOWN", "未知状态"};
+            };
+            result.setLogisticsStatus(status[0]);
+            result.setLogisticsStatusDesc(status[1]);
+            JsonNode list = data.path("list");
+            if (!list.isArray()) {
+                throw new WorkOrderException("物流查询返回轨迹格式错误");
+            }
+            var traces = new ArrayList<ExpressTraceResponse.TraceNode>();
+            for (JsonNode item : list) {
+                var node = new ExpressTraceResponse.TraceNode();
+                node.setTimeDesc(item.path("time").asText(null));
+                node.setDescription(item.path("status").asText(null));
+                if (node.getTimeDesc() != null) {
+                    try {
+                        node.setTime(LocalDateTime.parse(node.getTimeDesc(), DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+                                .atZone(ZoneId.of("Asia/Shanghai")).toInstant().toEpochMilli());
+                    } catch (DateTimeParseException ignored) {
+                        // 保留供应商原始时间文本，避免一个异常时间丢弃全部轨迹。
+                    }
+                }
+                traces.add(node);
+            }
+            traces.sort(Comparator.comparing(ExpressTraceResponse.TraceNode::getTime,
+                    Comparator.nullsLast(Comparator.reverseOrder())));
+            result.setTraces(traces);
+            if (!traces.isEmpty()) {
+                result.setTheLastTime(traces.get(0).getTimeDesc());
+                result.setTheLastMessage(traces.get(0).getDescription());
+            } else {
+                result.setTheLastTime(data.path("updateTime").asText(null));
+            }
+            return result;
 
         } catch (WorkOrderException e) {
             throw e;
